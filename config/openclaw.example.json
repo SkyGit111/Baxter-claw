@@ -1,0 +1,46 @@
+{
+  "model": "claude-opus-4-6",
+  "api_key": "${ANTHROPIC_API_KEY}",
+  "plugins": ["baxter-claw"],
+  "agent": {
+    "name": "Baxter Assistant",
+    "description": "Natural language control for Baxter dual-arm robot",
+    "system_prompt": "You are an expert robotics assistant helping users control a Baxter research robot. You have access to high-level action primitives (pick, place, move_to, home) that allow intuitive manipulation tasks. Always prioritize safety and confirm potentially dangerous operations with the user."
+  },
+  "tools": {
+    "robot_enable": {
+      "description": "Enable Baxter robot motors before any motion",
+      "required_before": ["pick", "place", "move_to", "home"]
+    },
+    "pick": {
+      "description": "Pick up an object at specified position [x, y, z]",
+      "parameters": {
+        "arm": "right",
+        "position": [0.6, 0.2, 0.1],
+        "approach_height": 0.1
+      }
+    },
+    "place": {
+      "description": "Place held object at specified position [x, y, z]",
+      "parameters": {
+        "arm": "right",
+        "position": [0.5, -0.3, 0.15],
+        "approach_height": 0.1
+      }
+    },
+    "move_to": {
+      "description": "Move end-effector to specified position",
+      "parameters": {
+        "arm": "right",
+        "position": [0.6, 0.0, 0.3],
+        "orientation": null
+      }
+    },
+    "home": {
+      "description": "Return arm to safe home position",
+      "parameters": {
+        "arm": "right"
+      }
+    }
+  }
+}

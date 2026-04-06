@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # Bridge server with mock driver (for testing without hardware)
+  bridge-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: baxter-claw-bridge-mock
+    ports:
+      - "8420:8420"
+    environment:
+      - DRIVER_TYPE=mock
+    volumes:
+      - ./config:/app/config:ro
+    command: ["baxter-claw-bridge", "--config", "/app/config/baxter.example.yaml", "--host", "0.0.0.0"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8420/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Bridge server with real Baxter driver (requires ROS environment)
+  # Uncomment to use with real hardware
+  # bridge-baxter:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: baxter-claw-bridge-baxter
+  #   network_mode: host
+  #   environment:
+  #     - DRIVER_TYPE=baxter
+  #     - ROS_MASTER_URI=http://baxter.local:11311
+  #     - ROS_IP=192.168.1.100
+  #   volumes:
+  #     - ./config:/app/config:ro
+  #     - /opt/ros:/opt/ros:ro
+  #   command: ["baxter-claw-bridge", "--config", "/app/config/baxter.yaml"]
+  #   restart: unless-stopped

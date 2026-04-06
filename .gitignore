@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# Node.js (for plugin)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# TypeScript
+*.tsbuildinfo
+plugin/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (may contain secrets)
+config/baxter.yaml
+config/openclaw.json
+*.local.yaml
+*.local.json
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# ROS
+devel/
+build/
+install/
+
+# Temporary files
+*.tmp
+*.bak
+.cache/
+
+# Docker
+.dockerignore

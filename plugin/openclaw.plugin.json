@@ -1,0 +1,269 @@
+{
+  "name": "baxter-claw",
+  "version": "0.1.0",
+  "description": "Natural language control for Baxter dual-arm robot",
+  "author": "Your Name",
+  "bridge": {
+    "url": "http://localhost:8420",
+    "timeout": 30000
+  },
+  "tools": [
+    {
+      "name": "robot_enable",
+      "description": "Enable Baxter robot motors. Must be called before any motion commands.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "robot_disable",
+      "description": "Disable Baxter robot motors. Use when done with robot operations.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "robot_status",
+      "description": "Get current robot status including joint angles, end-effector pose, and gripper state.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to query",
+            "default": "right"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "pick",
+      "description": "Pick up an object at the specified position. The robot will approach from above, grasp, and lift the object.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to use",
+            "default": "right"
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Target position [x, y, z] in meters relative to robot base"
+          },
+          "approach_height": {
+            "type": "number",
+            "description": "Height offset for pre-grasp pose (meters)",
+            "default": 0.1
+          }
+        },
+        "required": ["position"]
+      }
+    },
+    {
+      "name": "place",
+      "description": "Place the held object at the specified position. The robot will move above the target, descend, release, and retract.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to use",
+            "default": "right"
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Target position [x, y, z] in meters relative to robot base"
+          },
+          "approach_height": {
+            "type": "number",
+            "description": "Height offset for pre-place pose (meters)",
+            "default": 0.1
+          }
+        },
+        "required": ["position"]
+      }
+    },
+    {
+      "name": "move_to",
+      "description": "Move the end-effector to a specified position and orientation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to use",
+            "default": "right"
+          },
+          "position": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Target position [x, y, z] in meters"
+          },
+          "orientation": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Target orientation [roll, pitch, yaw] in radians (optional)"
+          }
+        },
+        "required": ["position"]
+      }
+    },
+    {
+      "name": "home",
+      "description": "Return the specified arm to its safe home position.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to return home",
+            "default": "right"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "gripper_control",
+      "description": "Control the gripper (open, close, or calibrate).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm's gripper to control",
+            "default": "right"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["open", "close", "calibrate"],
+            "description": "Gripper action to perform"
+          },
+          "force": {
+            "type": "number",
+            "description": "Grip force (0-100)",
+            "default": 30.0
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "emergency_stop",
+      "description": "Execute emergency stop. Immediately stops all robot motion.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "pick_by_name",
+      "description": "Pick up an object by name using vision. The robot will use its camera to locate the object, then pick it up.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": ["left", "right"],
+            "description": "Which arm to use",
+            "default": "right"
+          },
+          "object_name": {
+            "type": "string",
+            "description": "Name of the object to pick (e.g., 'red cup', 'blue box', 'phone')"
+          },
+          "camera": {
+            "type": "string",
+            "enum": ["left_hand", "right_hand", "head"],
+            "description": "Which camera to use for vision",
+            "default": "right_hand"
+          }
+        },
+        "required": ["object_name"]
+      }
+    },
+    {
+      "name": "locate_object",
+      "description": "Locate an object in the scene using vision without moving the robot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string",
+            "description": "Name of the object to locate"
+          },
+          "camera": {
+            "type": "string",
+            "enum": ["left_hand", "right_hand", "head"],
+            "description": "Which camera to use",
+            "default": "right_hand"
+          }
+        },
+        "required": ["object_name"]
+      }
+    },
+    {
+      "name": "describe_scene",
+      "description": "Get a description of what the robot can see in its camera view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "camera": {
+            "type": "string",
+            "enum": ["left_hand", "right_hand", "head"],
+            "description": "Which camera to use",
+            "default": "right_hand"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "identify_objects",
+      "description": "Identify all objects visible in the camera view.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "camera": {
+            "type": "string",
+            "enum": ["left_hand", "right_hand", "head"],
+            "description": "Which camera to use",
+            "default": "right_hand"
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}
