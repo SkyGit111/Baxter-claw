@@ -1,0 +1,57 @@
+"""
+OpenClaw Plugin Configuration for Baxter-Claw
+
+This file defines the plugin metadata and configuration for OpenClaw integration.
+"""
+
+name: baxter-claw
+version: 0.2.0
+description: Natural language control for Baxter robot with LLM-based intent recognition and vision-based grasping
+
+# Plugin entry point
+entry_point: baxter_claw_plugin.BaxterClawPlugin
+
+# Configuration
+config:
+  bridge_url: http://localhost:8420
+  default_arm: right
+
+  # LLM configuration for intent recognition
+  llm_provider: qwen  # Options: qwen, openai, claude
+  llm_api_key: ${QWEN_API_KEY}  # Or set directly
+
+  # Workspace bounds (meters)
+  workspace:
+    x: [0.3, 0.9]
+    y: [-0.7, 0.7]
+    z: [-0.2, 0.5]
+
+# Supported capabilities
+capabilities:
+  - llm_intent_recognition
+  - vision_grasping
+  - coordinate_control
+  - gripper_control
+  - scene_understanding
+  - multilingual_support
+
+# Example commands (Chinese and English)
+examples:
+  - "帮我拿一下红色的杯子"
+  - "pick the white box"
+  - "grab the blue bottle"
+  - "把它放到桌子左边"
+  - "place it on the right"
+  - "打开夹爪"
+  - "open gripper"
+  - "看看桌上有什么"
+  - "what do you see"
+  - "回到原位"
+  - "home"
+  - "查看机器人状态"
+  - "status"
+
+# Dependencies
+dependencies:
+  - httpx>=0.24.0
+  - pydantic>=2.0.0

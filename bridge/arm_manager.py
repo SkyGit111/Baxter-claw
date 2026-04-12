@@ -56,10 +56,11 @@ class ArmManager:
     def _create_driver(self) -> ArmDriver:
         """Create appropriate driver based on configuration."""
         driver_type = self.config.get('driver', {}).get('type', 'mock')
+        use_depth_camera = self.config.get('driver', {}).get('use_depth_camera', False)
 
         if driver_type == 'baxter':
-            print("Creating BaxterDriver (real hardware)")
-            return BaxterDriver()
+            print(f"Creating BaxterDriver (real hardware, depth_camera={use_depth_camera})")
+            return BaxterDriver(use_depth_camera=use_depth_camera)
         elif driver_type == 'mock':
             print("Creating MockDriver (simulation)")
             return MockDriver()

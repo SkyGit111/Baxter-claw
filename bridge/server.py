@@ -145,16 +145,19 @@ async def pick(req: PickRequest) -> PrimitiveResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.pick(
-        arm=req.arm,
-        position=req.position,
-        approach_height=req.approach_height or 0.1
-    )
+    try:
+        result = manager.primitives.pick(
+            arm=req.arm,
+            position=req.position,
+            approach_height=req.approach_height or 0.1
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Pick failed'))
 
-    return PrimitiveResponse(**result)
+        return PrimitiveResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Pick failed: {str(e)}")
 
 
 @app.post("/primitives/place")
@@ -166,16 +169,19 @@ async def place(req: PlaceRequest) -> PrimitiveResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.place(
-        arm=req.arm,
-        position=req.position,
-        approach_height=req.approach_height or 0.1
-    )
+    try:
+        result = manager.primitives.place(
+            arm=req.arm,
+            position=req.position,
+            approach_height=req.approach_height or 0.1
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Place failed'))
 
-    return PrimitiveResponse(**result)
+        return PrimitiveResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Place failed: {str(e)}")
 
 
 @app.post("/primitives/move_to")
@@ -187,16 +193,19 @@ async def move_to(req: MoveToRequest) -> PrimitiveResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.move_to(
-        arm=req.arm,
-        position=req.position,
-        orientation=req.orientation
-    )
+    try:
+        result = manager.primitives.move_to(
+            arm=req.arm,
+            position=req.position,
+            orientation=req.orientation
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Move failed'))
 
-    return PrimitiveResponse(**result)
+        return PrimitiveResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Move failed: {str(e)}")
 
 
 @app.post("/primitives/home")
@@ -208,12 +217,15 @@ async def home(req: HomeRequest) -> PrimitiveResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.home(arm=req.arm)
+    try:
+        result = manager.primitives.home(arm=req.arm)
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Home failed'))
 
-    return PrimitiveResponse(**result)
+        return PrimitiveResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Home failed: {str(e)}")
 
 
 @app.post("/gripper")
@@ -291,17 +303,22 @@ async def pick_by_name(req: PickByNameRequest) -> VisionResponse:
     if not manager.vlm_client:
         raise HTTPException(status_code=400, detail="VLM client not configured")
 
-    result = await manager.primitives.pick_by_name(
-        req.arm,
-        req.object_name,
-        req.camera,
-        req.approach_height or 0.1
-    )
+    try:
+        result = await manager.primitives.pick_by_name(
+            req.arm,
+            req.object_name,
+            req.camera,
+            req.approach_height or 0.1
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Vision pick failed'))
 
-    return VisionResponse(**result)
+        return VisionResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Vision pick failed: {str(e)}")
 
 
 @app.post("/vision/locate_object")
@@ -360,17 +377,20 @@ async def bimanual_pick(req: BimanualPickRequest) -> DualArmResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.bimanual_pick(
-        req.object_position,
-        req.left_offset or [-0.05, 0.0, 0.0],
-        req.right_offset or [0.05, 0.0, 0.0],
-        req.approach_height or 0.1
-    )
+    try:
+        result = manager.primitives.bimanual_pick(
+            req.object_position,
+            req.left_offset or [-0.05, 0.0, 0.0],
+            req.right_offset or [0.05, 0.0, 0.0],
+            req.approach_height or 0.1
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Bimanual pick failed'))
 
-    return DualArmResponse(**result)
+        return DualArmResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bimanual pick failed: {str(e)}")
 
 
 @app.post("/dualarm/handover")
@@ -379,16 +399,19 @@ async def handover(req: HandoverRequest) -> DualArmResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.handover(
-        req.from_arm,
-        req.to_arm,
-        req.handover_position
-    )
+    try:
+        result = manager.primitives.handover(
+            req.from_arm,
+            req.to_arm,
+            req.handover_position
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Handover failed'))
 
-    return DualArmResponse(**result)
+        return DualArmResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Handover failed: {str(e)}")
 
 
 @app.post("/dualarm/synchronized_move")
@@ -397,17 +420,20 @@ async def synchronized_move(req: SynchronizedMoveRequest) -> DualArmResponse:
     if manager is None:
         raise HTTPException(status_code=503, detail="Manager not initialized")
 
-    result = manager.primitives.synchronized_move(
-        req.left_position,
-        req.right_position,
-        req.left_orientation,
-        req.right_orientation
-    )
+    try:
+        result = manager.primitives.synchronized_move(
+            req.left_position,
+            req.right_position,
+            req.left_orientation,
+            req.right_orientation
+        )
 
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Synchronized move failed'))
 
-    return DualArmResponse(**result)
+        return DualArmResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Synchronized move failed: {str(e)}")
 
 
 def main():

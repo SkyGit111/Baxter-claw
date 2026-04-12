@@ -40,7 +40,9 @@ class EnhancedIKSolver:
             Joint angles dict if solution found, None otherwise
         """
         try:
-            from geometry_msgs.msg import Pose, Point, Quaternion
+            from geometry_msgs.msg import Pose, Point, Quaternion, PoseStamped
+            from std_msgs.msg import Header
+            from baxter_core_msgs.srv import SolvePositionIK, SolvePositionIKRequest
             from tf.transformations import quaternion_from_euler
             import rospy
 
@@ -56,12 +58,24 @@ class EnhancedIKSolver:
             if not limb:
                 return None
 
+            # Create IK service proxy
+            ns = f"ExternalTools/{arm}/PositionKinematicsNode/IKService"
+            iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
+
             # Strategy 1: Try with current joint angles as seed
             print(f"  IK attempt 1: Using current joint angles as seed...")
-            joint_solution = limb.ik_request(pose_msg, f"{arm}_gripper")
-            if joint_solution:
-                print(f"  ✓ IK solved on attempt 1")
-                return joint_solution
+            hdr = Header(stamp=rospy.Time.now(), frame_id='base')
+            ikreq = SolvePositionIKRequest()
+            ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=pose_msg))
+
+            try:
+                resp = iksvc(ikreq)
+                if resp.result_type[0] != resp.RESULT_INVALID:
+                    joint_solution = dict(zip(resp.joints[0].name, resp.joints[0].position))
+                    print(f"  ✓ IK solved on attempt 1")
+                    return joint_solution
+            except Exception as e:
+                print(f"  ✗ IK attempt 1 failed: {e}")
 
             # Strategy 2: Try with predefined seed positions
             if seed_positions is None:
@@ -76,14 +90,22 @@ class EnhancedIKSolver:
                 rospy.sleep(0.1)
 
                 # Try IK
-                joint_solution = limb.ik_request(pose_msg, f"{arm}_gripper")
+                ikreq = SolvePositionIKRequest()
+                ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=pose_msg))
+
+                try:
+                    resp = iksvc(ikreq)
+                    if resp.result_type[0] != resp.RESULT_INVALID:
+                        joint_solution = dict(zip(resp.joints[0].name, resp.joints[0].position))
+                        # Restore original position
+                        limb.set_joint_positions(current_angles)
+                        print(f"  ✓ IK solved on attempt {i}")
+                        return joint_solution
+                except Exception as e:
+                    print(f"  ✗ IK attempt {i} failed: {e}")
 
                 # Restore original position
                 limb.set_joint_positions(current_angles)
-
-                if joint_solution:
-                    print(f"  ✓ IK solved on attempt {i}")
-                    return joint_solution
 
             # Strategy 3: Try with slightly modified target pose
             print(f"  IK attempt {max_attempts}: Trying modified target pose...")
@@ -91,11 +113,18 @@ class EnhancedIKSolver:
             modified_pose[2] += 0.02  # Slightly higher
 
             pose_msg.position.z = modified_pose[2]
-            joint_solution = limb.ik_request(pose_msg, f"{arm}_gripper")
 
-            if joint_solution:
-                print(f"  ✓ IK solved with modified pose")
-                return joint_solution
+            ikreq = SolvePositionIKRequest()
+            ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=pose_msg))
+
+            try:
+                resp = iksvc(ikreq)
+                if resp.result_type[0] != resp.RESULT_INVALID:
+                    joint_solution = dict(zip(resp.joints[0].name, resp.joints[0].position))
+                    print(f"  ✓ IK solved with modified pose")
+                    return joint_solution
+            except Exception as e:
+                print(f"  ✗ Modified pose attempt failed: {e}")
 
             print(f"  ✗ IK failed after {max_attempts} attempts")
             return None

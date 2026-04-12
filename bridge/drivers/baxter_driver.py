@@ -1,7 +1,16 @@
 """Baxter robot driver using baxter_interface SDK."""
 
+import sys
 import time
 from typing import Dict, List, Tuple
+
+# Add ROS Python paths ONLY for ROS imports, before importing numpy
+_ros_paths = ['/opt/ros/noetic/lib/python3/dist-packages', '/usr/lib/python3/dist-packages']
+for path in _ros_paths:
+    if path not in sys.path:
+        sys.path.append(path)
+
+# Import numpy from conda environment first
 import numpy as np
 
 try:
@@ -22,7 +31,7 @@ class BaxterDriver(ArmDriver):
     Requires ROS environment and Baxter SDK to be properly configured.
     """
 
-    def __init__(self):
+    def __init__(self, use_depth_camera: bool = False):
         if not BAXTER_AVAILABLE:
             raise RuntimeError(
                 "baxter_interface not available. "
@@ -34,6 +43,19 @@ class BaxterDriver(ArmDriver):
         self._limbs = {}
         self._grippers = {}
         self._ik_solver = None  # Will be initialized after connection
+
+        # Depth camera support
+        self._use_depth_camera = use_depth_camera
+        self._depth_camera = None
+
+        if use_depth_camera:
+            try:
+                from .realsense_driver import RealSenseDriver
+                self._depth_camera = RealSenseDriver()
+                print("RealSense D455 depth camera initialized")
+            except Exception as e:
+                print(f"Warning: Could not initialize depth camera: {e}")
+                self._depth_camera = None
 
     def connect(self) -> bool:
         """Initialize ROS node and connect to Baxter."""
@@ -70,10 +92,14 @@ class BaxterDriver(ArmDriver):
             print(f"Failed to connect to Baxter: {e}")
             return False
 
-    def disconnect(self) -> bool:
-        """Disconnect from Baxter."""
+    def disconnect(self, keep_enabled: bool = False) -> bool:
+        """Disconnect from Baxter.
+
+        Args:
+            keep_enabled: If True, keep robot enabled (prevents arm from falling)
+        """
         try:
-            if self._robot_enable and self._robot_enable.state().enabled:
+            if not keep_enabled and self._robot_enable and self._robot_enable.state().enabled:
                 self.disable()
             self._connected = False
             return True
@@ -168,18 +194,38 @@ class BaxterDriver(ArmDriver):
                 print(f"Using enhanced IK solver for {arm} arm...")
                 joint_angles = self._ik_solver.solve_ik_with_fallback(arm, pose, max_attempts=5)
             else:
-                # Fallback to basic IK
+                # Fallback to basic IK using ROS service
                 print(f"Using basic IK solver for {arm} arm...")
-                from geometry_msgs.msg import Pose, Point, Quaternion
+                from geometry_msgs.msg import Pose, Point, Quaternion, PoseStamped
+                from std_msgs.msg import Header
+                from baxter_core_msgs.srv import SolvePositionIK, SolvePositionIKRequest
                 from tf.transformations import quaternion_from_euler
 
+                # Create IK service proxy
+                ns = f"ExternalTools/{arm}/PositionKinematicsNode/IKService"
+                iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
+
+                # Create pose
                 target_pose = Pose()
                 target_pose.position = Point(x=pose[0], y=pose[1], z=pose[2])
-
                 quat = quaternion_from_euler(pose[3], pose[4], pose[5])
                 target_pose.orientation = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
 
-                joint_angles = limb.ik_request(target_pose, limb.name + "_gripper")
+                # Create IK request
+                hdr = Header(stamp=rospy.Time.now(), frame_id='base')
+                ikreq = SolvePositionIKRequest()
+                ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=target_pose))
+
+                try:
+                    resp = iksvc(ikreq)
+                    if resp.result_type[0] != resp.RESULT_INVALID:
+                        # Convert response to joint angles dict
+                        joint_angles = dict(zip(resp.joints[0].name, resp.joints[0].position))
+                    else:
+                        joint_angles = None
+                except Exception as e:
+                    print(f"  ✗ IK service call failed: {e}")
+                    joint_angles = None
 
             if joint_angles is None:
                 print("IK solution not found")
@@ -286,7 +332,10 @@ class BaxterDriver(ArmDriver):
         """
         try:
             from sensor_msgs.msg import Image
-            from cv_bridge import CvBridge
+            import rospy
+            import numpy as np
+
+            # Import cv2 from conda environment
             import cv2
 
             # Map camera names to ROS topics
@@ -306,9 +355,40 @@ class BaxterDriver(ArmDriver):
             print(f"Capturing image from {camera}...")
             image_msg = rospy.wait_for_message(topic, Image, timeout=5.0)
 
-            # Convert ROS Image to OpenCV format
-            bridge = CvBridge()
-            cv_image = bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
+            # Convert ROS Image to numpy array manually (avoid cv_bridge GDAL conflict)
+            if image_msg.encoding == 'bgr8':
+                dtype = np.uint8
+                channels = 3
+            elif image_msg.encoding == 'rgb8':
+                dtype = np.uint8
+                channels = 3
+            elif image_msg.encoding == 'bgra8':
+                dtype = np.uint8
+                channels = 4
+            elif image_msg.encoding == 'rgba8':
+                dtype = np.uint8
+                channels = 4
+            elif image_msg.encoding == 'mono8':
+                dtype = np.uint8
+                channels = 1
+            else:
+                print(f"Unsupported encoding: {image_msg.encoding}")
+                return b""
+
+            # Reshape raw data to image
+            cv_image = np.frombuffer(image_msg.data, dtype=dtype).reshape(
+                image_msg.height, image_msg.width, channels
+            )
+
+            # Convert to BGR for JPEG encoding
+            if image_msg.encoding == 'rgb8':
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
+            elif image_msg.encoding == 'rgba8':
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGBA2BGR)
+            elif image_msg.encoding == 'bgra8':
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGRA2BGR)
+            elif image_msg.encoding == 'mono8':
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2BGR)
 
             # Encode as JPEG
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
@@ -324,6 +404,38 @@ class BaxterDriver(ArmDriver):
         except Exception as e:
             print(f"Failed to capture image from {camera}: {e}")
             return b""
+
+    def capture_rgbd(self):
+        """Capture RGB + Depth images from depth camera.
+
+        Returns:
+            Tuple of (rgb_image, depth_image) or (None, None) if unavailable
+        """
+        if not self._depth_camera:
+            print("Depth camera not available")
+            return None, None
+
+        try:
+            return self._depth_camera.capture_rgbd()
+        except Exception as e:
+            print(f"Failed to capture RGBD: {e}")
+            return None, None
+
+    def get_depth_camera_driver(self):
+        """Get the depth camera driver instance.
+
+        Returns:
+            RealSenseDriver instance or None
+        """
+        return self._depth_camera
+
+    def has_depth_camera(self) -> bool:
+        """Check if depth camera is available.
+
+        Returns:
+            True if depth camera is initialized and available
+        """
+        return self._depth_camera is not None
 
     def emergency_stop(self) -> bool:
         """Execute emergency stop."""

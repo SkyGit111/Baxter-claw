@@ -332,7 +332,7 @@ class BaxterPrimitives:
             if not image_bytes:
                 return {"success": False, "message": "Failed to capture image"}
 
-            # Locate object using VLM
+            # Locate object using VLM (with depth enhancement if available)
             print(f"  Locating {object_name} in image...")
             workspace_bounds = {
                 'x': self.safety.workspace_limits['x'],
@@ -340,11 +340,45 @@ class BaxterPrimitives:
                 'z': self.safety.workspace_limits['z'],
             }
 
-            location = await self.vlm_client.locate_object(
-                image_bytes,
-                object_name,
-                workspace_bounds
-            )
+            # Try depth-enhanced localization if depth camera is available
+            if self.driver.has_depth_camera():
+                print(f"  Using depth-enhanced localization...")
+                rgb, depth = self.driver.capture_rgbd()
+                if rgb is not None and depth is not None:
+                    # Convert RGB to JPEG
+                    import cv2
+                    success, jpeg_buffer = cv2.imencode('.jpg', rgb)
+                    if success:
+                        image_bytes = jpeg_buffer.tobytes()
+                        depth_camera = self.driver.get_depth_camera_driver()
+                        location = await self.vlm_client.locate_object_with_depth(
+                            image_bytes,
+                            depth,
+                            object_name,
+                            depth_camera,
+                            workspace_bounds
+                        )
+                    else:
+                        # Fallback to VLM-only
+                        location = await self.vlm_client.locate_object(
+                            image_bytes,
+                            object_name,
+                            workspace_bounds
+                        )
+                else:
+                    # Fallback to VLM-only
+                    location = await self.vlm_client.locate_object(
+                        image_bytes,
+                        object_name,
+                        workspace_bounds
+                    )
+            else:
+                # Use VLM-only localization
+                location = await self.vlm_client.locate_object(
+                    image_bytes,
+                    object_name,
+                    workspace_bounds
+                )
 
             if not location or not location['found']:
                 return {

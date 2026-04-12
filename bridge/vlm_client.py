@@ -4,6 +4,7 @@ import base64
 import os
 from typing import Dict, List, Optional, Tuple
 import httpx
+import numpy as np
 
 
 class VLMClient:
@@ -19,7 +20,7 @@ class VLMClient:
         """Initialize VLM client.
 
         Args:
-            provider: VLM provider ('claude', 'openai', 'custom')
+            provider: VLM provider ('claude', 'openai', 'qwen', 'custom')
             api_key: API key for the provider (or use environment variable)
         """
         self.provider = provider.lower()
@@ -29,12 +30,14 @@ class VLMClient:
         self.endpoints = {
             'claude': 'https://api.anthropic.com/v1/messages',
             'openai': 'https://api.openai.com/v1/chat/completions',
+            'qwen': 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
         }
 
         # Model names
         self.models = {
             'claude': 'claude-3-5-sonnet-20241022',
             'openai': 'gpt-4-vision-preview',
+            'qwen': 'qwen-vl-max',
         }
 
     def _get_api_key(self) -> str:
@@ -43,6 +46,8 @@ class VLMClient:
             return os.getenv('ANTHROPIC_API_KEY', '')
         elif self.provider == 'openai':
             return os.getenv('OPENAI_API_KEY', '')
+        elif self.provider == 'qwen':
+            return os.getenv('QWEN_API_KEY', '')
         return ''
 
     async def locate_object(
@@ -133,6 +138,8 @@ Respond in JSON format:
             return await self._call_claude(image_b64, prompt)
         elif self.provider == 'openai':
             return await self._call_openai(image_b64, prompt)
+        elif self.provider == 'qwen':
+            return await self._call_qwen(image_b64, prompt)
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -207,6 +214,40 @@ Respond in JSON format:
             response.raise_for_status()
             return response.json()
 
+    async def _call_qwen(self, image_b64: str, prompt: str) -> Dict:
+        """Call Qwen VL API."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                self.endpoints['qwen'],
+                headers={
+                    'Authorization': f'Bearer {self.api_key}',
+                    'Content-Type': 'application/json',
+                },
+                json={
+                    'model': self.models['qwen'],
+                    'messages': [
+                        {
+                            'role': 'user',
+                            'content': [
+                                {
+                                    'type': 'text',
+                                    'text': prompt,
+                                },
+                                {
+                                    'type': 'image_url',
+                                    'image_url': {
+                                        'url': f'data:image/jpeg;base64,{image_b64}',
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                    'max_tokens': 1024,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
     def _parse_locate_response(self, response: Dict, object_name: str) -> Dict:
         """Parse VLM response for object location."""
         import json
@@ -216,6 +257,8 @@ Respond in JSON format:
             if self.provider == 'claude':
                 text = response['content'][0]['text']
             elif self.provider == 'openai':
+                text = response['choices'][0]['message']['content']
+            elif self.provider == 'qwen':
                 text = response['choices'][0]['message']['content']
             else:
                 text = str(response)
@@ -287,6 +330,8 @@ Be concise and focus on actionable information for robot control."""
                 return response['content'][0]['text']
             elif self.provider == 'openai':
                 return response['choices'][0]['message']['content']
+            elif self.provider == 'qwen':
+                return response['choices'][0]['message']['content']
             else:
                 return str(response)
 
@@ -333,6 +378,8 @@ Respond in JSON format:
                 text = response['content'][0]['text']
             elif self.provider == 'openai':
                 text = response['choices'][0]['message']['content']
+            elif self.provider == 'qwen':
+                text = response['choices'][0]['message']['content']
             else:
                 text = str(response)
 
@@ -355,3 +402,76 @@ Respond in JSON format:
         except Exception as e:
             print(f"Failed to identify objects: {e}")
             return []
+
+    async def locate_object_with_depth(
+        self,
+        image_bytes: bytes,
+        depth_image: np.ndarray,
+        object_name: str,
+        depth_camera_driver,
+        workspace_bounds: Optional[Dict[str, Tuple[float, float]]] = None
+    ) -> Optional[Dict]:
+        """Locate an object using VLM + depth camera for accurate 3D position.
+
+        Args:
+            image_bytes: JPEG image data
+            depth_image: Depth image array (H, W) in millimeters
+            object_name: Name of object to locate
+            depth_camera_driver: RealSense driver instance for 3D conversion
+            workspace_bounds: Optional workspace bounds for validation
+
+        Returns:
+            Dict with accurate 3D position from depth data
+        """
+        try:
+            # Step 1: Use VLM to identify object and get 2D bounding box
+            print(f"[VLM+Depth] Locating {object_name} with depth enhancement...")
+            location_2d = await self.locate_object(image_bytes, object_name, workspace_bounds)
+
+            if not location_2d or not location_2d['found']:
+                return location_2d
+
+            # Step 2: Extract bounding box center
+            bbox = location_2d['bounding_box']
+            center_x = (bbox[0] + bbox[2]) // 2
+            center_y = (bbox[1] + bbox[3]) // 2
+
+            print(f"  VLM detected object at pixel ({center_x}, {center_y})")
+            print(f"  VLM estimated position: {location_2d['position']}")
+
+            # Step 3: Get real 3D position from depth camera
+            point_3d = depth_camera_driver.get_3d_point_from_pixel(
+                depth_image,
+                center_x,
+                center_y,
+                window_size=5
+            )
+
+            if point_3d is None:
+                print(f"  Warning: No valid depth at object center, using VLM estimate")
+                return location_2d
+
+            # Step 4: Convert from camera frame to robot base frame
+            # Note: This assumes depth camera is mounted on robot
+            # You may need to add camera-to-base transformation here
+            real_position = list(point_3d)
+
+            print(f"  Depth camera measured position: {real_position}")
+            print(f"  Position difference: {[real_position[i] - location_2d['position'][i] for i in range(3)]}")
+
+            # Return enhanced result
+            return {
+                'found': True,
+                'position': real_position,  # Real 3D position from depth!
+                'confidence': 95,  # High confidence with depth data
+                'description': location_2d['description'],
+                'bounding_box': bbox,
+                'depth_enhanced': True,
+                'vlm_estimate': location_2d['position'],  # Keep VLM estimate for comparison
+            }
+
+        except Exception as e:
+            print(f"Failed to locate object with depth: {e}")
+            # Fallback to VLM-only estimate
+            return await self.locate_object(image_bytes, object_name, workspace_bounds)
+

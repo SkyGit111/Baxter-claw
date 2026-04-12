@@ -1,4 +1,6 @@
-"""OpenClaw plugin entry point for Baxter-Claw."""
+/**
+ * OpenClaw plugin entry point for Baxter-Claw.
+ */
 
 import * as fs from 'fs';
 import * as path from 'path';

@@ -1,4 +1,6 @@
-"""HTTP client for communicating with Baxter-Claw bridge server."""
+/**
+ * HTTP client for communicating with Baxter-Claw bridge server.
+ */
 
 import axios, { AxiosInstance } from 'axios';
 
