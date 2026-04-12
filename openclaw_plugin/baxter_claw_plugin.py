@@ -224,7 +224,7 @@ Now parse the user command and respond with JSON only:"""
         return response.json()
 
     def _parse_llm_response(self, response: Dict) -> Dict[str, Any]:
-        """Parse LLM response to extract intent."""
+        """Parse LLM response to extract next action."""
         try:
             # Extract text from response
             if self.llm_provider == 'qwen' or self.llm_provider == 'openai':
@@ -251,26 +251,26 @@ Now parse the user command and respond with JSON only:"""
                 json_text = text
 
             # Parse JSON
-            intent = json.loads(json_text)
+            action_dict = json.loads(json_text)
 
-            # Validate structure
-            if 'action' not in intent:
-                intent['action'] = 'unknown'
-            if 'params' not in intent:
-                intent['params'] = {}
-            if 'confidence' not in intent:
-                intent['confidence'] = 0.5
+            # Validate structure for workflow execution
+            if 'action' not in action_dict:
+                action_dict['action'] = 'next'
+            if 'skill' not in action_dict and action_dict['action'] == 'next':
+                action_dict['skill'] = 'unknown'
+            if 'params' not in action_dict:
+                action_dict['params'] = {}
+            if 'confidence' not in action_dict:
+                action_dict['confidence'] = 0.5
 
-            return intent
+            return action_dict
 
         except Exception as e:
             print(f"Failed to parse LLM response: {e}")
             print(f"Response: {response}")
             return {
-                'action': 'unknown',
-                'params': {},
-                'confidence': 0.0,
-                'error': f'Parse error: {e}'
+                'action': 'error',
+                'message': f'LLM 响应解析失败: {e}'
             }
 
     def execute_action(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -454,9 +454,9 @@ Now parse the user command and respond with JSON only:"""
         return [base[i] + offset[i] for i in range(3)]
 
     def handle_message(self, user_message: str) -> str:
-        """Handle user message and return response.
+        """Handle user message with dynamic skill execution.
 
-        This is the main entry point for OpenClaw integration.
+        Uses LLM to dynamically decide next skill after each execution.
 
         Args:
             user_message: Natural language message from user
@@ -464,20 +464,146 @@ Now parse the user command and respond with JSON only:"""
         Returns:
             Response message to user
         """
-        # Parse intent
-        intent = self.parse_intent(user_message)
+        # Initialize execution context
+        context = {
+            'user_message': user_message,
+            'execution_history': [],
+            'current_state': {},
+            'max_iterations': 10,
+            'iteration': 0
+        }
 
-        if intent['confidence'] < 0.5:
-            return "抱歉，我不太理解你的意思。你可以说：\n" \
-                   "- '拿一下红色杯子'\n" \
-                   "- '放到左边'\n" \
-                   "- '打开夹爪'\n" \
-                   "- '看看桌上有什么'"
+        # Execute workflow dynamically
+        return self._execute_workflow(context)
 
-        # Execute action
-        result = self.execute_action(intent['action'], intent['params'])
+    def _execute_workflow(self, context: Dict[str, Any]) -> str:
+        """Execute workflow by dynamically calling skills.
 
-        return result['message']
+        LLM decides next skill based on current state.
+        """
+        while context['iteration'] < context['max_iterations']:
+            context['iteration'] += 1
+
+            # 1. Ask LLM what to do next
+            next_action = self._get_next_action(context)
+
+            if not next_action:
+                return '无法获取下一个动作'
+
+            # Check for completion or error
+            action_type = next_action.get('action', 'next')
+
+            if action_type == 'done':
+                # Task completed
+                return context['current_state'].get(
+                    'final_message',
+                    '任务完成！'
+                )
+
+            if action_type == 'error':
+                return next_action.get('message', '任务失败')
+
+            # For 'next' action, must have 'skill' field
+            if action_type == 'next':
+                if 'skill' not in next_action or not next_action['skill']:
+                    print(f"警告: LLM 返回的动作缺少 'skill' 字段: {next_action}")
+                    # 尝试重新询问
+                    if context['iteration'] < context['max_iterations'] - 1:
+                        print("重新询问 LLM...")
+                        continue
+                    return '无法确定下一个技能'
+
+            # 2. Execute the skill
+            skill_name = next_action.get('skill')
+            params = next_action.get('params', {})
+
+            print(f"[迭代 {context['iteration']}] 执行: {skill_name}")
+            print(f"参数: {params}")
+
+            result = self.execute_action(skill_name, params)
+
+            # 3. Record execution
+            context['execution_history'].append({
+                'skill': skill_name,
+                'params': params,
+                'result': result,
+                'reasoning': next_action.get('reasoning', '')
+            })
+
+            # 4. Update state
+            context['current_state']['last_result'] = result
+            context['current_state']['last_skill'] = skill_name
+
+            # Check for failure
+            if not result.get('success'):
+                context['current_state']['error'] = result.get('message', '未知错误')
+            else:
+                context['current_state']['last_success'] = result
+
+        return '超过最大迭代次数，任务未完成'
+
+    def _get_next_action(self, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Ask LLM to decide next action based on current context."""
+        prompt = self._build_workflow_prompt(context)
+
+        try:
+            response = self._call_llm(prompt)
+            action = self._parse_llm_response(response)
+            return action
+        except Exception as e:
+            print(f"LLM 调用失败: {e}")
+            return {'action': 'error', 'message': f'LLM 错误: {e}'}
+
+    def _build_workflow_prompt(self, context: Dict[str, Any]) -> str:
+        """Build prompt for LLM to decide next action."""
+        execution_history = context['execution_history']
+        current_state = context['current_state']
+
+        # Build execution history summary
+        history_text = ""
+        if execution_history:
+            history_text = "\n执行历史:\n"
+            for i, entry in enumerate(execution_history[-3:]):  # Only last 3
+                status = "✓ 成功" if entry['result'].get('success') else "✗ 失败"
+                history_text += f"{i+1}. {entry['skill']}: {status}\n"
+                if entry['result'].get('message'):
+                    history_text += f"   信息: {entry['result'].get('message')}\n"
+
+        # Build current state summary
+        state_text = ""
+        if current_state.get('error'):
+            state_text += f"\n最后的错误: {current_state['error']}"
+        if current_state.get('last_success'):
+            state_text += f"\n上一个成功的动作: {current_state.get('last_skill')}"
+
+        prompt = f"""You are a robot control assistant. Your task is to decide what the robot should do NEXT.
+
+User's goal: "{context['user_message']}"
+{history_text}{state_text}
+
+Available skills (choose ONE):
+- pick_by_name {{"object_name": "物体名字"}}
+- place {{"direction": "left"/"right"/"front"/"back"/"center"}}
+- move_to {{"position": [x, y, z]}}
+- gripper_open {{}}
+- gripper_close {{}}
+- describe_scene {{}}
+- home {{}}
+- status {{}}
+
+Decision rules:
+1. If user's goal is DONE, set action="done"
+2. If same action failed 2+ times, try different approach or action="error"
+3. Always return VALID JSON with these REQUIRED fields:
+   - action: "next" or "done" or "error"
+   - skill: skill name (if action="next")
+   - params: skill parameters
+   - reasoning: brief explanation
+
+RETURN ONLY JSON, no other text:
+"""
+        return prompt
+        return prompt
 
 
 # For testing
