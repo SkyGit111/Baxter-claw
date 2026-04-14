@@ -83,7 +83,7 @@ echo "启动中..."
 echo ""
 
 # 启动 Bridge Server
-python -m bridge.server
+python -m bridge.server --config config/baxter.yaml
 
 # 如果服务器退出
 echo ""

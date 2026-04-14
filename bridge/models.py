@@ -43,7 +43,7 @@ class MoveToRequest(BaseModel):
 
 class HomeRequest(BaseModel):
     """Request to return arm to home position."""
-    arm: Literal["left", "right"] = Field(default="right", description="Which arm to use")
+    arm: Literal["left", "right", "both"] = Field(default="right", description="Which arm(s) to use")
 
 
 class GripperRequest(BaseModel):

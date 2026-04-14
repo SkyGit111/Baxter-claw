@@ -28,24 +28,25 @@ class BaxterPrimitives:
         self.vlm_client = vlm_client
 
         # Predefined home positions for each arm
+        # Updated to current comfortable positions (2026-04-14)
         self.home_positions = {
             'right': {
-                'right_s0': 0.0,
-                'right_s1': -0.55,
-                'right_e0': 0.0,
-                'right_e1': 0.75,
-                'right_w0': 0.0,
-                'right_w1': 1.26,
-                'right_w2': 0.0,
+                'right_s0': 0.076316,
+                'right_s1': -0.981748,
+                'right_e0': 1.140515,
+                'right_e1': 1.890631,
+                'right_w0': -0.641204,
+                'right_w1': 1.038888,
+                'right_w2': 0.479752,
             },
             'left': {
-                'left_s0': 0.0,
-                'left_s1': -0.55,
-                'left_e0': 0.0,
-                'left_e1': 0.75,
-                'left_w0': 0.0,
-                'left_w1': 1.26,
-                'left_w2': 0.0,
+                'left_s0': -0.079384,
+                'left_s1': -0.998621,
+                'left_e0': -1.188068,
+                'left_e1': 1.937801,
+                'left_w0': 0.671884,
+                'left_w1': 1.028918,
+                'left_w2': -0.501612,
             }
         }
 
@@ -264,10 +265,10 @@ class BaxterPrimitives:
             return {"success": False, "message": f"MoveTo failed: {str(e)}"}
 
     def home(self, arm: str, speed: float = 0.3) -> Dict:
-        """Return arm to predefined home position.
+        """Return arm(s) to predefined home position.
 
         Args:
-            arm: 'left' or 'right'
+            arm: 'left', 'right', or 'both'
             speed: Motion speed ratio (0-1)
 
         Returns:
@@ -276,6 +277,30 @@ class BaxterPrimitives:
         try:
             print(f"[Primitive] Home: arm={arm}")
 
+            # Handle 'both' arms
+            if arm == 'both':
+                results = []
+                for single_arm in ['left', 'right']:
+                    result = self.home(single_arm, speed)
+                    results.append(result)
+
+                # Check if both succeeded
+                all_success = all(r['success'] for r in results)
+                if all_success:
+                    return {
+                        "success": True,
+                        "message": "Both arms returned to home position",
+                        "arm": "both"
+                    }
+                else:
+                    failed_arms = [r.get('arm', 'unknown') for r in results if not r['success']]
+                    return {
+                        "success": False,
+                        "message": f"Failed to home arms: {', '.join(failed_arms)}",
+                        "arm": "both"
+                    }
+
+            # Single arm
             if arm not in self.home_positions:
                 return {"success": False, "message": f"Unknown arm: {arm}"}
 

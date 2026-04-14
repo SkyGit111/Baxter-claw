@@ -97,31 +97,60 @@ class BaxterClawPlugin:
 
     def _build_intent_prompt(self, user_message: str) -> str:
         """Build prompt for LLM intent recognition."""
-        prompt = f"""You are a robot control assistant. Parse the following user command and identify the intent and parameters.
+        prompt = f"""You are a robot control assistant for a dual-arm Baxter robot. Parse the following user command and identify the intent and parameters.
 
 User command: "{user_message}"
 
+IMPORTANT: The robot has TWO arms (left and right). You must identify which arm(s) to use.
+
 Available actions:
 1. pick_by_name - Pick up an object by name
-   Parameters: object_name (string, e.g., "red cup", "blue box", "红色杯子")
+   Parameters:
+   - object_name (string, e.g., "red cup", "blue box", "红色杯子")
+   - arm (string: "left"/"right"/"auto", default: "auto" - will choose based on object position)
 
 2. place - Place the held object at a location
-   Parameters: direction (string: "left"/"right"/"front"/"back"/"up"/"down"/"center" or "左"/"右"/"前"/"后"/"上"/"下"/"中")
+   Parameters:
+   - direction (string: "left"/"right"/"front"/"back"/"up"/"down"/"center" or "左"/"右"/"前"/"后"/"上"/"下"/"中")
+   - arm (string: "left"/"right"/"auto", default: "auto")
 
-3. gripper_open - Open the gripper
+3. move_to - Move arm to a position
+   Parameters:
+   - position (list: [x, y, z])
+   - arm (string: "left"/"right", required)
+
+4. gripper_open - Open the gripper
+   Parameters:
+   - arm (string: "left"/"right"/"both", default: "right")
+
+5. gripper_close - Close the gripper
+   Parameters:
+   - arm (string: "left"/"right"/"both", default: "right")
+
+6. describe_scene - Describe what the robot sees
    Parameters: none
 
-4. gripper_close - Close the gripper
+7. home - Return to home position
+   Parameters:
+   - arm (string: "left"/"right"/"both", default: "both")
+
+8. status - Check robot status
    Parameters: none
 
-5. describe_scene - Describe what the robot sees
-   Parameters: none
+9. bimanual_pick - Pick large object with both arms
+   Parameters:
+   - object_name (string)
 
-6. home - Return to home position
-   Parameters: none
+10. handover - Hand over object from one arm to another
+    Parameters:
+    - from_arm (string: "left"/"right")
+    - to_arm (string: "left"/"right")
 
-7. status - Check robot status
-   Parameters: none
+Arm selection rules:
+- If user specifies arm explicitly (e.g., "用左手", "with right arm"), use that arm
+- If user says "both hands" or "两只手", use bimanual actions
+- If arm is "auto", the system will choose based on object position (closer arm)
+- For handover, identify which arm currently holds the object
 
 Respond ONLY with a JSON object in this exact format:
 {{
@@ -131,14 +160,17 @@ Respond ONLY with a JSON object in this exact format:
 }}
 
 Examples:
-- "帮我拿一下红色的杯子" -> {{"action": "pick_by_name", "params": {{"object_name": "红色的杯子"}}, "confidence": 0.95}}
-- "pick the white box" -> {{"action": "pick_by_name", "params": {{"object_name": "white box"}}, "confidence": 0.95}}
-- "把它放到左边" -> {{"action": "place", "params": {{"direction": "左"}}, "confidence": 0.9}}
-- "place it on the right" -> {{"action": "place", "params": {{"direction": "right"}}, "confidence": 0.9}}
-- "打开夹爪" -> {{"action": "gripper_open", "params": {{}}, "confidence": 0.95}}
-- "open gripper" -> {{"action": "gripper_open", "params": {{}}, "confidence": 0.95}}
+- "帮我拿一下红色的杯子" -> {{"action": "pick_by_name", "params": {{"object_name": "红色的杯子", "arm": "auto"}}, "confidence": 0.95}}
+- "用左手拿白色盒子" -> {{"action": "pick_by_name", "params": {{"object_name": "白色盒子", "arm": "left"}}, "confidence": 0.95}}
+- "pick the white box with right arm" -> {{"action": "pick_by_name", "params": {{"object_name": "white box", "arm": "right"}}, "confidence": 0.95}}
+- "用两只手拿那个大箱子" -> {{"action": "bimanual_pick", "params": {{"object_name": "大箱子"}}, "confidence": 0.9}}
+- "把它放到左边" -> {{"action": "place", "params": {{"direction": "左", "arm": "auto"}}, "confidence": 0.9}}
+- "右臂放到右边" -> {{"action": "place", "params": {{"direction": "右", "arm": "right"}}, "confidence": 0.9}}
+- "打开左边夹爪" -> {{"action": "gripper_open", "params": {{"arm": "left"}}, "confidence": 0.95}}
+- "open both grippers" -> {{"action": "gripper_open", "params": {{"arm": "both"}}, "confidence": 0.95}}
+- "把物体从右手传到左手" -> {{"action": "handover", "params": {{"from_arm": "right", "to_arm": "left"}}, "confidence": 0.9}}
+- "两只手都回原位" -> {{"action": "home", "params": {{"arm": "both"}}, "confidence": 0.95}}
 - "看看桌上有什么" -> {{"action": "describe_scene", "params": {{}}, "confidence": 0.9}}
-- "what do you see" -> {{"action": "describe_scene", "params": {{}}, "confidence": 0.9}}
 
 Now parse the user command and respond with JSON only:"""
 
@@ -273,6 +305,28 @@ Now parse the user command and respond with JSON only:"""
                 'message': f'LLM 响应解析失败: {e}'
             }
 
+    def _choose_arm_by_position(self, position: list) -> str:
+        """Choose arm based on object position (y-coordinate).
+
+        Args:
+            position: [x, y, z] position of object
+
+        Returns:
+            'left' or 'right'
+        """
+        # Baxter coordinate system: positive y is to the left, negative y is to the right
+        # If y > 0, object is on left side, use left arm
+        # If y < 0, object is on right side, use right arm
+        # If y ≈ 0, use right arm as default
+        y = position[1] if len(position) > 1 else 0.0
+
+        if y > 0.05:  # Object on left side (threshold 5cm)
+            return 'left'
+        elif y < -0.05:  # Object on right side
+            return 'right'
+        else:  # Object in center, default to right
+            return 'right'
+
     def execute_action(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute action by calling Bridge Server API.
 
@@ -286,12 +340,40 @@ Now parse the user command and respond with JSON only:"""
         try:
             if action == 'pick_by_name':
                 object_name = params.get('object_name', '')
+                arm = params.get('arm', 'auto')
+
+                # If arm is 'auto', first locate the object to determine which arm to use
+                if arm == 'auto':
+                    # Locate object first
+                    locate_response = self.client.post(
+                        f"{self.bridge_url}/vision/locate_object",
+                        json={
+                            'object_name': object_name,
+                            'camera': 'right_hand'  # Use right hand camera for initial scan
+                        }
+                    )
+                    locate_response.raise_for_status()
+                    locate_result = locate_response.json()
+
+                    if locate_result.get('success') and locate_result.get('position'):
+                        # Choose arm based on object position
+                        position = locate_result['position']
+                        arm = self._choose_arm_by_position(position)
+                        print(f"[Auto-select] Object at {position}, choosing {arm} arm")
+                    else:
+                        # Fallback to right arm if localization fails
+                        arm = 'right'
+                        print(f"[Auto-select] Localization failed, defaulting to right arm")
+
+                # Determine which camera to use based on arm
+                camera = f"{arm}_hand"
+
                 response = self.client.post(
                     f"{self.bridge_url}/vision/pick_by_name",
                     json={
-                        'arm': 'right',
+                        'arm': arm,
                         'object_name': object_name,
-                        'camera': 'right_hand'
+                        'camera': camera
                     }
                 )
                 response.raise_for_status()
@@ -300,8 +382,9 @@ Now parse the user command and respond with JSON only:"""
                 if result.get('success'):
                     return {
                         'success': True,
-                        'message': f"成功抓取 {object_name}",
-                        'data': result
+                        'message': f"成功用{arm}臂抓取 {object_name}",
+                        'data': result,
+                        'arm_used': arm
                     }
                 else:
                     return {
@@ -312,43 +395,89 @@ Now parse the user command and respond with JSON only:"""
 
             elif action == 'place':
                 direction = params.get('direction', '前')
+                arm = params.get('arm', 'auto')
+
+                # If arm is 'auto', use the arm that's currently holding an object
+                # For now, default to right arm (state tracking will improve this)
+                if arm == 'auto':
+                    arm = 'right'  # TODO: Use state tracking to determine which arm holds object
+
                 # Convert direction to coordinates
                 position = self._direction_to_position(direction)
 
                 response = self.client.post(
                     f"{self.bridge_url}/primitives/place",
-                    json={'arm': 'right', 'position': position}
+                    json={'arm': arm, 'position': position}
                 )
                 response.raise_for_status()
                 result = response.json()
 
                 return {
                     'success': result.get('success', False),
-                    'message': f"已放置到{direction}边",
-                    'data': result
+                    'message': f"已用{arm}臂放置到{direction}边",
+                    'data': result,
+                    'arm_used': arm
                 }
 
             elif action == 'gripper_open':
-                response = self.client.post(
-                    f"{self.bridge_url}/gripper",
-                    json={'arm': 'right', 'action': 'open'}
-                )
-                response.raise_for_status()
-                return {
-                    'success': True,
-                    'message': "夹爪已打开"
-                }
+                arm = params.get('arm', 'right')
+
+                if arm == 'both':
+                    # Open both grippers
+                    left_response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': 'left', 'action': 'open'}
+                    )
+                    right_response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': 'right', 'action': 'open'}
+                    )
+                    left_response.raise_for_status()
+                    right_response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': "两个夹爪已打开"
+                    }
+                else:
+                    response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': arm, 'action': 'open'}
+                    )
+                    response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': f"{arm}臂夹爪已打开"
+                    }
 
             elif action == 'gripper_close':
-                response = self.client.post(
-                    f"{self.bridge_url}/gripper",
-                    json={'arm': 'right', 'action': 'close'}
-                )
-                response.raise_for_status()
-                return {
-                    'success': True,
-                    'message': "夹爪已关闭"
-                }
+                arm = params.get('arm', 'right')
+
+                if arm == 'both':
+                    # Close both grippers
+                    left_response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': 'left', 'action': 'close'}
+                    )
+                    right_response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': 'right', 'action': 'close'}
+                    )
+                    left_response.raise_for_status()
+                    right_response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': "两个夹爪已关闭"
+                    }
+                else:
+                    response = self.client.post(
+                        f"{self.bridge_url}/gripper",
+                        json={'arm': arm, 'action': 'close'}
+                    )
+                    response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': f"{arm}臂夹爪已关闭"
+                    }
 
             elif action == 'describe_scene':
                 response = self.client.post(
@@ -364,16 +493,127 @@ Now parse the user command and respond with JSON only:"""
                     'data': result
                 }
 
-            elif action == 'home':
+            elif action == 'move_to':
+                position = params.get('position')
+                arm = params.get('arm', 'right')
+
+                if not position:
+                    return {
+                        'success': False,
+                        'message': "移动失败: 需要提供位置坐标"
+                    }
                 response = self.client.post(
-                    f"{self.bridge_url}/primitives/home",
-                    json={'arm': 'right'}
+                    f"{self.bridge_url}/primitives/move_to",
+                    json={'arm': arm, 'position': position}
                 )
                 response.raise_for_status()
+                result = response.json()
                 return {
-                    'success': True,
-                    'message': "已回到原位"
+                    'success': result.get('success', False),
+                    'message': f"{arm}臂" + result.get('message', '移动完成'),
+                    'data': result,
+                    'arm_used': arm
                 }
+
+            elif action == 'home':
+                arm = params.get('arm', 'both')
+
+                if arm == 'both':
+                    # Return both arms to home
+                    left_response = self.client.post(
+                        f"{self.bridge_url}/primitives/home",
+                        json={'arm': 'left'}
+                    )
+                    right_response = self.client.post(
+                        f"{self.bridge_url}/primitives/home",
+                        json={'arm': 'right'}
+                    )
+                    left_response.raise_for_status()
+                    right_response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': "两只手臂已回到原位"
+                    }
+                else:
+                    response = self.client.post(
+                        f"{self.bridge_url}/primitives/home",
+                        json={'arm': arm}
+                    )
+                    response.raise_for_status()
+                    return {
+                        'success': True,
+                        'message': f"{arm}臂已回到原位"
+                    }
+
+            elif action == 'bimanual_pick':
+                object_name = params.get('object_name', '')
+
+                # First locate the object
+                locate_response = self.client.post(
+                    f"{self.bridge_url}/vision/locate_object",
+                    json={
+                        'object_name': object_name,
+                        'camera': 'right_hand'
+                    }
+                )
+                locate_response.raise_for_status()
+                locate_result = locate_response.json()
+
+                if not locate_result.get('success') or not locate_result.get('position'):
+                    return {
+                        'success': False,
+                        'message': f"无法定位 {object_name}"
+                    }
+
+                object_position = locate_result['position']
+
+                # Execute bimanual pick
+                response = self.client.post(
+                    f"{self.bridge_url}/dualarm/bimanual_pick",
+                    json={'object_position': object_position}
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get('success'):
+                    return {
+                        'success': True,
+                        'message': f"成功用双臂抓取 {object_name}",
+                        'data': result
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'message': f"双臂抓取失败: {result.get('message', '未知错误')}",
+                        'data': result
+                    }
+
+            elif action == 'handover':
+                from_arm = params.get('from_arm', 'right')
+                to_arm = params.get('to_arm', 'left')
+
+                response = self.client.post(
+                    f"{self.bridge_url}/dualarm/handover",
+                    json={
+                        'from_arm': from_arm,
+                        'to_arm': to_arm
+                    }
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get('success'):
+                    return {
+                        'success': True,
+                        'message': f"成功从{from_arm}臂传递到{to_arm}臂",
+                        'data': result
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'message': f"传递失败: {result.get('message', '未知错误')}",
+                        'data': result
+                    }
 
             elif action == 'status':
                 response = self.client.get(f"{self.bridge_url}/status")
@@ -464,11 +704,23 @@ Now parse the user command and respond with JSON only:"""
         Returns:
             Response message to user
         """
-        # Initialize execution context
+        # Initialize execution context with robot state tracking
         context = {
             'user_message': user_message,
             'execution_history': [],
             'current_state': {},
+            'robot_state': {
+                'left_arm': {
+                    'holding_object': False,
+                    'object_name': None,
+                    'last_position': None
+                },
+                'right_arm': {
+                    'holding_object': False,
+                    'object_name': None,
+                    'last_position': None
+                }
+            },
             'max_iterations': 10,
             'iteration': 0
         }
@@ -530,15 +782,63 @@ Now parse the user command and respond with JSON only:"""
                 'reasoning': next_action.get('reasoning', '')
             })
 
+            # Debug: 打印结果
+            print(f"  结果: {result.get('message', 'N/A')}")
+
             # 4. Update state
             context['current_state']['last_result'] = result
             context['current_state']['last_skill'] = skill_name
 
-            # Check for failure
+            # Update robot state based on action
+            if result.get('success'):
+                arm_used = result.get('arm_used')
+
+                # Track pick actions
+                if skill_name == 'pick_by_name' and arm_used:
+                    context['robot_state'][f'{arm_used}_arm']['holding_object'] = True
+                    context['robot_state'][f'{arm_used}_arm']['object_name'] = params.get('object_name')
+                    print(f"  [State] {arm_used} arm now holding: {params.get('object_name')}")
+
+                # Track place actions
+                elif skill_name == 'place' and arm_used:
+                    context['robot_state'][f'{arm_used}_arm']['holding_object'] = False
+                    context['robot_state'][f'{arm_used}_arm']['object_name'] = None
+                    print(f"  [State] {arm_used} arm released object")
+
+                # Track bimanual pick
+                elif skill_name == 'bimanual_pick':
+                    context['robot_state']['left_arm']['holding_object'] = True
+                    context['robot_state']['right_arm']['holding_object'] = True
+                    object_name = params.get('object_name')
+                    context['robot_state']['left_arm']['object_name'] = object_name
+                    context['robot_state']['right_arm']['object_name'] = object_name
+                    print(f"  [State] Both arms now holding: {object_name}")
+
+                # Track handover
+                elif skill_name == 'handover':
+                    from_arm = params.get('from_arm', 'right')
+                    to_arm = params.get('to_arm', 'left')
+                    object_name = context['robot_state'][f'{from_arm}_arm']['object_name']
+                    context['robot_state'][f'{from_arm}_arm']['holding_object'] = False
+                    context['robot_state'][f'{from_arm}_arm']['object_name'] = None
+                    context['robot_state'][f'{to_arm}_arm']['holding_object'] = True
+                    context['robot_state'][f'{to_arm}_arm']['object_name'] = object_name
+                    print(f"  [State] Object transferred from {from_arm} to {to_arm}")
+
+            # Check for failure - count failures
             if not result.get('success'):
                 context['current_state']['error'] = result.get('message', '未知错误')
+                # Count how many times this skill failed
+                failed_count = sum(
+                    1 for entry in context['execution_history']
+                    if entry['skill'] == skill_name and not entry['result'].get('success')
+                )
+                context['current_state']['failed_skill'] = skill_name
+                context['current_state']['failed_count'] = failed_count
+                print(f"  注意: {skill_name} 失败 {failed_count} 次")
             else:
                 context['current_state']['last_success'] = result
+                context['current_state']['failed_count'] = 0
 
         return '超过最大迭代次数，任务未完成'
 
@@ -558,6 +858,7 @@ Now parse the user command and respond with JSON only:"""
         """Build prompt for LLM to decide next action."""
         execution_history = context['execution_history']
         current_state = context['current_state']
+        robot_state = context['robot_state']
 
         # Build execution history summary
         history_text = ""
@@ -576,25 +877,41 @@ Now parse the user command and respond with JSON only:"""
         if current_state.get('last_success'):
             state_text += f"\n上一个成功的动作: {current_state.get('last_skill')}"
 
-        prompt = f"""You are a robot control assistant. Your task is to decide what the robot should do NEXT.
+        # Build robot state summary
+        robot_state_text = "\n当前机器人状态:\n"
+        left_holding = robot_state['left_arm']['holding_object']
+        right_holding = robot_state['right_arm']['holding_object']
+        robot_state_text += f"- 左臂: {'持有物体' if left_holding else '空闲'}"
+        if left_holding:
+            robot_state_text += f" ({robot_state['left_arm']['object_name']})"
+        robot_state_text += f"\n- 右臂: {'持有物体' if right_holding else '空闲'}"
+        if right_holding:
+            robot_state_text += f" ({robot_state['right_arm']['object_name']})"
+
+        prompt = f"""You are a robot control assistant for a dual-arm Baxter robot. Your task is to decide what the robot should do NEXT.
 
 User's goal: "{context['user_message']}"
-{history_text}{state_text}
+{history_text}{state_text}{robot_state_text}
 
 Available skills (choose ONE):
-- pick_by_name {{"object_name": "物体名字"}}
-- place {{"direction": "left"/"right"/"front"/"back"/"center"}}
-- move_to {{"position": [x, y, z]}}
-- gripper_open {{}}
-- gripper_close {{}}
+- pick_by_name {{"object_name": "物体名字", "arm": "left"/"right"/"auto"}}
+- place {{"direction": "left"/"right"/"front"/"back"/"center", "arm": "left"/"right"/"auto"}}
+- move_to {{"position": [x, y, z], "arm": "left"/"right"}}
+- gripper_open {{"arm": "left"/"right"/"both"}}
+- gripper_close {{"arm": "left"/"right"/"both"}}
 - describe_scene {{}}
-- home {{}}
+- home {{"arm": "left"/"right"/"both"}}
 - status {{}}
+- bimanual_pick {{"object_name": "物体名字"}}
+- handover {{"from_arm": "left"/"right", "to_arm": "left"/"right"}}
 
 Decision rules:
 1. If user's goal is DONE, set action="done"
 2. If same action failed 2+ times, try different approach or action="error"
-3. Always return VALID JSON with these REQUIRED fields:
+3. Consider which arm is holding objects when deciding next action
+4. Use "auto" for arm parameter to let system choose based on object position
+5. Use bimanual_pick for large objects or when user says "both hands"
+6. Always return VALID JSON with these REQUIRED fields:
    - action: "next" or "done" or "error"
    - skill: skill name (if action="next")
    - params: skill parameters

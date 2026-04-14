@@ -54,7 +54,8 @@ class VLMClient:
         self,
         image_bytes: bytes,
         object_name: str,
-        workspace_bounds: Optional[Dict[str, Tuple[float, float]]] = None
+        workspace_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
+        custom_prompt: Optional[str] = None
     ) -> Optional[Dict]:
         """Locate an object in the image.
 
@@ -62,6 +63,7 @@ class VLMClient:
             image_bytes: JPEG image data
             object_name: Name of object to locate (e.g., "red cup", "blue box")
             workspace_bounds: Optional workspace bounds for validation
+            custom_prompt: Optional custom prompt (overrides default)
 
         Returns:
             Dict with object location info:
@@ -77,8 +79,11 @@ class VLMClient:
             # Encode image to base64
             image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
-            # Construct prompt
-            prompt = self._build_locate_prompt(object_name, workspace_bounds)
+            # Use custom prompt if provided, otherwise build default
+            if custom_prompt:
+                prompt = custom_prompt
+            else:
+                prompt = self._build_locate_prompt(object_name, workspace_bounds)
 
             # Call VLM
             response = await self._call_vlm(image_b64, prompt)
@@ -409,7 +414,8 @@ Respond in JSON format:
         depth_image: np.ndarray,
         object_name: str,
         depth_camera_driver,
-        workspace_bounds: Optional[Dict[str, Tuple[float, float]]] = None
+        workspace_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
+        custom_prompt: Optional[str] = None
     ) -> Optional[Dict]:
         """Locate an object using VLM + depth camera for accurate 3D position.
 
@@ -419,6 +425,7 @@ Respond in JSON format:
             object_name: Name of object to locate
             depth_camera_driver: RealSense driver instance for 3D conversion
             workspace_bounds: Optional workspace bounds for validation
+            custom_prompt: Optional custom prompt (overrides default)
 
         Returns:
             Dict with accurate 3D position from depth data
@@ -426,7 +433,12 @@ Respond in JSON format:
         try:
             # Step 1: Use VLM to identify object and get 2D bounding box
             print(f"[VLM+Depth] Locating {object_name} with depth enhancement...")
-            location_2d = await self.locate_object(image_bytes, object_name, workspace_bounds)
+            location_2d = await self.locate_object(
+                image_bytes,
+                object_name,
+                workspace_bounds,
+                custom_prompt=custom_prompt
+            )
 
             if not location_2d or not location_2d['found']:
                 return location_2d
@@ -451,18 +463,16 @@ Respond in JSON format:
                 print(f"  Warning: No valid depth at object center, using VLM estimate")
                 return location_2d
 
-            # Step 4: Convert from camera frame to robot base frame
-            # Note: This assumes depth camera is mounted on robot
-            # You may need to add camera-to-base transformation here
+            # Step 4: Position is in camera frame, will be transformed by caller
             real_position = list(point_3d)
 
-            print(f"  Depth camera measured position: {real_position}")
+            print(f"  Depth camera measured position (camera frame): {real_position}")
             print(f"  Position difference: {[real_position[i] - location_2d['position'][i] for i in range(3)]}")
 
             # Return enhanced result
             return {
                 'found': True,
-                'position': real_position,  # Real 3D position from depth!
+                'position': real_position,  # Real 3D position from depth (camera frame)
                 'confidence': 95,  # High confidence with depth data
                 'description': location_2d['description'],
                 'bounding_box': bbox,
