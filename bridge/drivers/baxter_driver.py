@@ -2,7 +2,7 @@
 
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # Add ROS Python paths ONLY for ROS imports, before importing numpy
 _ros_paths = ['/opt/ros/noetic/lib/python3/dist-packages', '/usr/lib/python3/dist-packages']
@@ -168,12 +168,201 @@ class BaxterDriver(ArmDriver):
             print(f"Failed to move to joint positions: {e}")
             return False
 
+    def check_pose_reachable(
+        self, arm: str, pose: List[float], silent: bool = False
+    ) -> bool:
+        """Check if a pose is reachable by the specified arm without actually moving.
+
+        Args:
+            arm: 'left' or 'right'
+            pose: [x, y, z, roll, pitch, yaw]
+            silent: If True, suppress print output
+
+        Returns:
+            True if pose is reachable, False otherwise
+        """
+        if arm not in self._limbs:
+            if not silent:
+                print(f"Invalid arm: {arm}")
+            return False
+
+        try:
+            # Try enhanced IK solver first if available
+            if self._ik_solver:
+                joint_angles = self._ik_solver.solve_ik_with_fallback(
+                    arm, pose, max_attempts=5, silent=silent
+                )
+            else:
+                # Fallback to basic IK using ROS service
+                joint_angles = self._solve_basic_ik(arm, pose)
+
+            return joint_angles is not None
+
+        except Exception as e:
+            if not silent:
+                print(f"Reachability check failed: {e}")
+            return False
+
+    def select_best_arm_for_position(
+        self, position: List[float], orientation: Optional[List[float]] = None
+    ) -> Optional[str]:
+        """Automatically select the best arm (left or right) for a target position.
+
+        Selection criteria:
+        1. Reachability: Can the arm reach the position?
+        2. Y-coordinate preference:
+           - Y > 0 (left side) → prefer left arm
+           - Y < 0 (right side) → prefer right arm
+        3. Distance: Choose arm closer to target
+
+        Args:
+            position: Target position [x, y, z]
+            orientation: Optional orientation [roll, pitch, yaw], defaults to pointing down
+
+        Returns:
+            'left', 'right', or None if neither arm can reach
+        """
+        if orientation is None:
+            orientation = [np.pi, 0.0, 0.0]  # Default: pointing down
+
+        pose = position + orientation
+
+        print(f"[ArmSelection] Selecting arm for position {position}")
+        print(f"  Y-coordinate: {position[1]:.3f}m ({'left side' if position[1] > 0 else 'right side'})")
+
+        # Check reachability for both arms
+        left_reachable = self.check_pose_reachable('left', pose, silent=True)
+        right_reachable = self.check_pose_reachable('right', pose, silent=True)
+
+        print(f"  Left arm reachable: {left_reachable}")
+        print(f"  Right arm reachable: {right_reachable}")
+
+        # If only one arm can reach, use it
+        if left_reachable and not right_reachable:
+            print(f"  → Selected: left (only reachable arm)")
+            return 'left'
+        elif right_reachable and not left_reachable:
+            print(f"  → Selected: right (only reachable arm)")
+            return 'right'
+        elif not left_reachable and not right_reachable:
+            print(f"  → Selected: None (unreachable by both arms)")
+            return None
+
+        # Both arms can reach - use Y-coordinate preference
+        if position[1] > 0.05:  # Left side (Y > 5cm)
+            print(f"  → Selected: left (Y > 0, left side of workspace)")
+            return 'left'
+        elif position[1] < -0.05:  # Right side (Y < -5cm)
+            print(f"  → Selected: right (Y < 0, right side of workspace)")
+            return 'right'
+        else:
+            # Center region (-5cm < Y < 5cm) - choose based on distance
+            left_pose = self.get_endpoint_pose('left')
+            right_pose = self.get_endpoint_pose('right')
+
+            if left_pose and right_pose:
+                left_dist = np.linalg.norm(np.array(left_pose[:3]) - np.array(position))
+                right_dist = np.linalg.norm(np.array(right_pose[:3]) - np.array(position))
+
+                if left_dist < right_dist:
+                    print(f"  → Selected: left (closer, dist={left_dist:.3f}m)")
+                    return 'left'
+                else:
+                    print(f"  → Selected: right (closer, dist={right_dist:.3f}m)")
+                    return 'right'
+
+            # Fallback: prefer right arm for center
+            print(f"  → Selected: right (center region, default)")
+            return 'right'
+
+    def check_pose_reachable(
+        self, arm: str, pose: List[float], silent: bool = False
+    ) -> bool:
+        """Check if a pose is reachable by the specified arm without actually moving.
+
+        This performs IK solving without executing motion, providing fast reachability check.
+
+        Args:
+            arm: 'left' or 'right'
+            pose: [x, y, z, roll, pitch, yaw]
+            silent: If True, suppress print output
+
+        Returns:
+            True if pose is reachable (IK solution exists), False otherwise
+        """
+        if arm not in self._limbs:
+            if not silent:
+                print(f"Invalid arm: {arm}")
+            return False
+
+        try:
+            # Try enhanced IK solver first if available
+            if self._ik_solver:
+                # Note: solve_ik_with_fallback doesn't have silent parameter
+                # We'll suppress output by temporarily redirecting stdout if silent=True
+                if silent:
+                    import os
+                    import sys
+                    # Redirect stdout to devnull
+                    old_stdout = sys.stdout
+                    sys.stdout = open(os.devnull, 'w')
+
+                try:
+                    joint_angles = self._ik_solver.solve_ik_with_fallback(
+                        arm, pose, max_attempts=5
+                    )
+                finally:
+                    if silent:
+                        sys.stdout.close()
+                        sys.stdout = old_stdout
+            else:
+                # Fallback to basic IK using ROS service
+                joint_angles = self._solve_basic_ik(arm, pose)
+
+            return joint_angles is not None
+
+        except Exception as e:
+            if not silent:
+                print(f"Reachability check failed: {e}")
+            return False
+
+    def select_arm_by_y_coordinate(
+        self, position: List[float], y_threshold: float = 0.16
+    ) -> str:
+        """Select arm based on Y-coordinate with a threshold.
+
+        Simple rule:
+        - Y < y_threshold → right arm
+        - Y >= y_threshold → left arm
+
+        Args:
+            position: Target position [x, y, z]
+            y_threshold: Y-coordinate threshold (default: 0.16m)
+
+        Returns:
+            'left' or 'right'
+        """
+        y = position[1]
+
+        if y < y_threshold:
+            return 'right'
+        else:
+            return 'left'
+
     def move_to_pose(
-        self, arm: str, pose: List[float], speed: float = 0.3, timeout: float = 15.0
+        self, arm: str, pose: List[float], speed: float = 0.3, timeout: float = 15.0,
+        retry_with_perturbation: bool = True
     ) -> bool:
         """Move Baxter arm to Cartesian pose using IK.
 
         Uses enhanced IK solver with fallback strategies if available.
+
+        Args:
+            arm: 'left' or 'right'
+            pose: [x, y, z, roll, pitch, yaw]
+            speed: Motion speed (0-1)
+            timeout: Timeout in seconds
+            retry_with_perturbation: If True, retry with position perturbations on failure
         """
         if not self.is_enabled():
             print("Robot not enabled")
@@ -192,43 +381,19 @@ class BaxterDriver(ArmDriver):
             # Try enhanced IK solver first if available
             if self._ik_solver:
                 print(f"Using enhanced IK solver for {arm} arm...")
-                joint_angles = self._ik_solver.solve_ik_with_fallback(arm, pose, max_attempts=5)
+                joint_angles = self._ik_solver.solve_ik_with_fallback(arm, pose, max_attempts=10)
             else:
                 # Fallback to basic IK using ROS service
                 print(f"Using basic IK solver for {arm} arm...")
-                from geometry_msgs.msg import Pose, Point, Quaternion, PoseStamped
-                from std_msgs.msg import Header
-                from baxter_core_msgs.srv import SolvePositionIK, SolvePositionIKRequest
-                from tf.transformations import quaternion_from_euler
+                joint_angles = self._solve_basic_ik(arm, pose)
 
-                # Create IK service proxy
-                ns = f"ExternalTools/{arm}/PositionKinematicsNode/IKService"
-                iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
-
-                # Create pose
-                target_pose = Pose()
-                target_pose.position = Point(x=pose[0], y=pose[1], z=pose[2])
-                quat = quaternion_from_euler(pose[3], pose[4], pose[5])
-                target_pose.orientation = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
-
-                # Create IK request
-                hdr = Header(stamp=rospy.Time.now(), frame_id='base')
-                ikreq = SolvePositionIKRequest()
-                ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=target_pose))
-
-                try:
-                    resp = iksvc(ikreq)
-                    if resp.result_type[0] != resp.RESULT_INVALID:
-                        # Convert response to joint angles dict
-                        joint_angles = dict(zip(resp.joints[0].name, resp.joints[0].position))
-                    else:
-                        joint_angles = None
-                except Exception as e:
-                    print(f"  ✗ IK service call failed: {e}")
-                    joint_angles = None
+            # If IK failed and retry is enabled, try with perturbations
+            if joint_angles is None and retry_with_perturbation:
+                print("  Initial IK failed, trying with position perturbations...")
+                joint_angles = self._solve_ik_with_perturbations(arm, pose)
 
             if joint_angles is None:
-                print("IK solution not found")
+                print("  ✗ IK solution not found after all attempts")
                 return False
 
             # Move to joint angles
@@ -237,6 +402,106 @@ class BaxterDriver(ArmDriver):
         except Exception as e:
             print(f"Failed to move to pose: {e}")
             return False
+
+    def _solve_basic_ik(self, arm: str, pose: List[float]):
+        """Solve IK using basic ROS service."""
+        from geometry_msgs.msg import Pose, Point, Quaternion, PoseStamped
+        from std_msgs.msg import Header
+        from baxter_core_msgs.srv import SolvePositionIK, SolvePositionIKRequest
+        from tf.transformations import quaternion_from_euler
+
+        try:
+            # Create IK service proxy
+            ns = f"ExternalTools/{arm}/PositionKinematicsNode/IKService"
+            iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
+
+            # Create pose
+            target_pose = Pose()
+            target_pose.position = Point(x=pose[0], y=pose[1], z=pose[2])
+            quat = quaternion_from_euler(pose[3], pose[4], pose[5])
+            target_pose.orientation = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+
+            # Create IK request
+            hdr = Header(stamp=rospy.Time.now(), frame_id='base')
+            ikreq = SolvePositionIKRequest()
+            ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=target_pose))
+
+            resp = iksvc(ikreq)
+            if resp.result_type[0] != resp.RESULT_INVALID:
+                # Convert response to joint angles dict
+                return dict(zip(resp.joints[0].name, resp.joints[0].position))
+            else:
+                return None
+        except Exception as e:
+            print(f"  ✗ IK service call failed: {e}")
+            return None
+
+    def _solve_ik_with_perturbations(self, arm: str, pose: List[float], max_attempts: int = 20):
+        """Try to solve IK with small position perturbations.
+
+        Strategy:
+        1. Try small perturbations in X, Y, Z (±1cm, ±2cm)
+        2. Try small orientation adjustments (±5°, ±10°)
+        3. Try combinations of position and orientation changes
+        """
+        import numpy as np
+
+        print(f"  Attempting IK with perturbations (max {max_attempts} attempts)...")
+
+        # Perturbation strategies (in order of preference)
+        perturbations = [
+            # Small position adjustments
+            ([0.01, 0, 0], [0, 0, 0]),      # +1cm X
+            ([-0.01, 0, 0], [0, 0, 0]),     # -1cm X
+            ([0, 0.01, 0], [0, 0, 0]),      # +1cm Y
+            ([0, -0.01, 0], [0, 0, 0]),     # -1cm Y
+            ([0, 0, 0.01], [0, 0, 0]),      # +1cm Z
+            ([0, 0, -0.01], [0, 0, 0]),     # -1cm Z
+
+            # Larger position adjustments
+            ([0.02, 0, 0], [0, 0, 0]),      # +2cm X
+            ([-0.02, 0, 0], [0, 0, 0]),     # -2cm X
+            ([0, 0.02, 0], [0, 0, 0]),      # +2cm Y
+            ([0, -0.02, 0], [0, 0, 0]),     # -2cm Y
+
+            # Orientation adjustments (5 degrees)
+            ([0, 0, 0], [np.radians(5), 0, 0]),
+            ([0, 0, 0], [-np.radians(5), 0, 0]),
+            ([0, 0, 0], [0, np.radians(5), 0]),
+            ([0, 0, 0], [0, -np.radians(5), 0]),
+
+            # Combined adjustments
+            ([0.01, 0.01, 0], [0, 0, 0]),
+            ([-0.01, 0.01, 0], [0, 0, 0]),
+            ([0.01, -0.01, 0], [0, 0, 0]),
+            ([0, 0, 0.02], [np.radians(5), 0, 0]),
+            ([0.01, 0, 0.01], [0, 0, 0]),
+            ([0, 0.01, 0.01], [0, 0, 0]),
+        ]
+
+        for i, (pos_delta, ori_delta) in enumerate(perturbations[:max_attempts]):
+            perturbed_pose = pose.copy()
+            perturbed_pose[0] += pos_delta[0]
+            perturbed_pose[1] += pos_delta[1]
+            perturbed_pose[2] += pos_delta[2]
+            perturbed_pose[3] += ori_delta[0]
+            perturbed_pose[4] += ori_delta[1]
+            perturbed_pose[5] += ori_delta[2]
+
+            # Try IK with perturbed pose
+            if self._ik_solver:
+                joint_angles = self._ik_solver.solve_ik_with_fallback(arm, perturbed_pose, max_attempts=3)
+            else:
+                joint_angles = self._solve_basic_ik(arm, perturbed_pose)
+
+            if joint_angles is not None:
+                print(f"  ✓ IK solved with perturbation #{i+1}")
+                print(f"    Position delta: [{pos_delta[0]*100:+.1f}, {pos_delta[1]*100:+.1f}, {pos_delta[2]*100:+.1f}]cm")
+                if any(ori_delta):
+                    print(f"    Orientation delta: [{np.degrees(ori_delta[0]):+.1f}, {np.degrees(ori_delta[1]):+.1f}, {np.degrees(ori_delta[2]):+.1f}]°")
+                return joint_angles
+
+        return None
 
     def get_joint_angles(self, arm: str) -> Dict[str, float]:
         """Get current joint angles."""

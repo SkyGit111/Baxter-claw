@@ -86,6 +86,31 @@ HTML_TEMPLATE = """
             margin-bottom: 15px;
             color: #333;
         }
+        .camera-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .camera-btn {
+            flex: 1;
+            padding: 8px 12px;
+            background: #f0f0f0;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            color: #666;
+        }
+        .camera-btn:hover {
+            background: #e8e8e8;
+        }
+        .camera-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }
         .camera-view {
             flex: 1;
             background: #f5f5f5;
@@ -332,6 +357,11 @@ HTML_TEMPLATE = """
 
         <div class="camera-panel">
             <h2>📷 摄像头视图</h2>
+            <div class="camera-selector">
+                <button class="camera-btn" id="btnD455" onclick="selectCamera('d455')">D455</button>
+                <button class="camera-btn active" id="btnRightHand" onclick="selectCamera('right_hand')">右手</button>
+                <button class="camera-btn" id="btnLeftHand" onclick="selectCamera('left_hand')">左手</button>
+            </div>
             <div class="camera-view" id="cameraView">
                 <div class="camera-placeholder">
                     点击下方按钮刷新摄像头图像
@@ -354,6 +384,7 @@ HTML_TEMPLATE = """
         let recognition = null;
         let isListening = false;
         let synthesis = window.speechSynthesis;
+        let currentCamera = 'right_hand';
 
         // 初始化语音识别
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -522,11 +553,31 @@ HTML_TEMPLATE = """
             }
         }
 
+        function selectCamera(camera) {
+            currentCamera = camera;
+
+            // 更新按钮状态
+            document.querySelectorAll('.camera-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            const btnMap = {
+                'd455': 'btnD455',
+                'right_hand': 'btnRightHand',
+                'left_hand': 'btnLeftHand'
+            };
+
+            document.getElementById(btnMap[camera]).classList.add('active');
+
+            // 自动刷新图像
+            refreshCamera();
+        }
+
         async function refreshCamera() {
             try {
                 cameraView.innerHTML = '<div class="camera-placeholder">加载中...</div>';
 
-                const response = await fetch('/camera/image');
+                const response = await fetch('/camera/image?camera=' + currentCamera);
                 const data = await response.json();
 
                 if (data.success && data.image) {
@@ -590,8 +641,11 @@ def status():
 def get_camera_image():
     """获取摄像头图像"""
     try:
+        # 获取摄像头参数，默认为右手摄像头
+        camera = request.args.get('camera', 'right_hand')
+
         # 从bridge服务器获取图像
-        response = requests.get(f"{BRIDGE_URL}/camera/capture", timeout=5)
+        response = requests.get(f"{BRIDGE_URL}/camera?camera={camera}", timeout=5)
         if response.status_code == 200:
             data = response.json()
             if data.get('success') and 'image' in data:
@@ -599,6 +653,7 @@ def get_camera_image():
                 return jsonify({
                     'success': True,
                     'image': data['image'],
+                    'camera': camera,
                     'timestamp': data.get('timestamp', '')
                 })
         return jsonify({'success': False, 'message': '无法获取图像'}), 500

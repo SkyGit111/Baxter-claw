@@ -2,10 +2,12 @@
 
 from typing import Dict, List, Optional
 import time
+import numpy as np
 
 from .drivers.base import ArmDriver
 from .safety import SafetyValidator
 from .vlm_client import VLMClient
+from .multi_view_vlm import MultiViewVLMCoordinator
 
 
 class BaxterPrimitives:
@@ -27,26 +29,36 @@ class BaxterPrimitives:
         self.safety = safety
         self.vlm_client = vlm_client
 
+        # Initialize multi-view VLM coordinator if VLM is available
+        self.multi_view_vlm = None
+        if vlm_client and driver.has_depth_camera():
+            try:
+                self.multi_view_vlm = MultiViewVLMCoordinator(driver, vlm_client, safety)
+                print("[Primitives] Multi-view VLM coordinator initialized")
+            except Exception as e:
+                print(f"[Primitives] Warning: Could not initialize multi-view VLM: {e}")
+
         # Predefined home positions for each arm
-        # Updated to current comfortable positions (2026-04-14)
+        # Updated to current ideal positions (2026-04-21)
+        # Read from actual robot pose and mirrored for symmetry
         self.home_positions = {
             'right': {
-                'right_s0': 0.076316,
-                'right_s1': -0.981748,
-                'right_e0': 1.140515,
-                'right_e1': 1.890631,
-                'right_w0': -0.641204,
-                'right_w1': 1.038888,
-                'right_w2': 0.479752,
+                'right_s0': -0.456743,
+                'right_s1': -1.424685,
+                'right_e0': -0.282252,
+                'right_e1': 2.226190,
+                'right_w0': -0.052922,
+                'right_w1': 1.343000,
+                'right_w2': -0.008820,
             },
             'left': {
-                'left_s0': -0.079384,
-                'left_s1': -0.998621,
-                'left_e0': -1.188068,
-                'left_e1': 1.937801,
-                'left_w0': 0.671884,
-                'left_w1': 1.028918,
-                'left_w2': -0.501612,
+                'left_s0': 0.456743,   # Mirror of right_s0
+                'left_s1': -1.424685,  # Same as right_s1
+                'left_e0': 0.282252,   # Mirror of right_e0
+                'left_e1': 2.226190,   # Same as right_e1
+                'left_w0': 0.052922,   # Mirror of right_w0
+                'left_w1': 1.343000,   # Same as right_w1
+                'left_w2': 0.008820,   # Mirror of right_w2
             }
         }
 
@@ -83,20 +95,64 @@ class BaxterPrimitives:
                 return {"success": False, "message": "Position must be [x, y, z]"}
 
             # Default orientation (gripper pointing down)
-            orientation = [0.0, 0.0, 0.0]
+            # Roll=pi means gripper pointing down
+            orientation = [np.pi, 0.0, 0.0]
 
-            # Step 1: Move to pre-grasp pose
+            # Step 0: Check reachability BEFORE attempting motion
             pre_grasp_pose = position.copy()
             pre_grasp_pose[2] += approach_height
 
+            print(f"  Pre-grasp pose: {pre_grasp_pose}")
+            print(f"  Orientation (RPY): {orientation}")
+
+            print(f"  Checking reachability for {arm} arm...")
+            is_reachable = self.driver.check_pose_reachable(
+                arm,
+                pre_grasp_pose + orientation
+            )
+
+            if not is_reachable:
+                print(f"  ✗ Target unreachable by {arm} arm")
+
+                # Suggest alternative arm
+                other_arm = 'right' if arm == 'left' else 'left'
+                other_reachable = self.driver.check_pose_reachable(
+                    other_arm,
+                    pre_grasp_pose + orientation,
+                    silent=True
+                )
+
+                if other_reachable:
+                    return {
+                        "success": False,
+                        "message": f"Target unreachable by {arm} arm. Try using {other_arm} arm instead.",
+                        "position": position,
+                        "suggested_arm": other_arm
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Target position {position} is unreachable by both arms",
+                        "position": position
+                    }
+
+            print(f"  ✓ Target is reachable by {arm} arm")
+
+            # Step 1: Move to pre-grasp pose
             is_safe, msg = self.safety.check_workspace(arm, pre_grasp_pose + orientation)
             if not is_safe:
+                print(f"  ERROR: Pre-grasp pose failed safety check: {msg}")
                 return {"success": False, "message": f"Pre-grasp pose unsafe: {msg}"}
 
             print(f"  Moving to pre-grasp pose: {pre_grasp_pose}")
             success = self.driver.move_to_pose(arm, pre_grasp_pose + orientation, speed)
             if not success:
-                return {"success": False, "message": "Failed to reach pre-grasp pose"}
+                print(f"  ERROR: Failed to reach pre-grasp pose")
+                print(f"  This could be due to:")
+                print(f"    - IK solver cannot find solution")
+                print(f"    - Position out of reach")
+                print(f"    - Joint limits exceeded")
+                return {"success": False, "message": "Failed to reach pre-grasp pose (IK failed or unreachable)"}
 
             # Step 2: Open gripper
             print("  Opening gripper")
@@ -104,12 +160,16 @@ class BaxterPrimitives:
             time.sleep(0.5)
 
             # Step 3: Descend to target
-            target_pose = position + orientation
+            # Override Z coordinate to fixed depth for reliable grasping
+            grasp_position = position.copy()
+            grasp_position[2] = -0.16  # Fixed Z depth to ensure gripper reaches table level
+
+            target_pose = grasp_position + orientation
             is_safe, msg = self.safety.check_workspace(arm, target_pose)
             if not is_safe:
                 return {"success": False, "message": f"Target pose unsafe: {msg}"}
 
-            print(f"  Descending to target: {position}")
+            print(f"  Descending to target: {grasp_position} (Z fixed at -0.16)")
             success = self.driver.move_to_pose(arm, target_pose, speed * 0.5)
             if not success:
                 return {"success": False, "message": "Failed to reach target"}
@@ -145,10 +205,11 @@ class BaxterPrimitives:
         """Place the held object at the specified position.
 
         Execution sequence:
-        1. Move to pre-place pose (above target)
-        2. Descend to target position
-        3. Open gripper
-        4. Retract upward
+        1. Lift to safe height (avoid obstacles during horizontal movement)
+        2. Move horizontally to above target position
+        3. Descend to target position
+        4. Open gripper
+        5. Retract upward
 
         Args:
             arm: 'left' or 'right'
@@ -165,22 +226,46 @@ class BaxterPrimitives:
             if len(position) != 3:
                 return {"success": False, "message": "Position must be [x, y, z]"}
 
-            orientation = [0.0, 0.0, 0.0]
+            # Use same orientation as pick (gripper pointing down)
+            orientation = [np.pi, 0.0, 0.0]
 
-            # Step 1: Move to pre-place pose
+            # Step 1: Lift to safe height first (avoid obstacles during horizontal movement)
+            # Get current position
+            current_pose = self.driver.get_endpoint_pose(arm)
+            if current_pose is None:
+                return {"success": False, "message": "Failed to get current pose"}
+
+            current_position = current_pose[:3]
+
+            # Calculate safe lift height (higher of: current height + 0.05m, or target + approach_height)
+            safe_height = max(current_position[2] + 0.05, position[2] + approach_height)
+
+            lift_pose = current_position.copy()
+            lift_pose[2] = safe_height
+
+            is_safe, msg = self.safety.check_workspace(arm, lift_pose + orientation)
+            if not is_safe:
+                return {"success": False, "message": f"Lift pose unsafe: {msg}"}
+
+            print(f"  Lifting to safe height: Z={safe_height:.3f}m")
+            success = self.driver.move_to_pose(arm, lift_pose + orientation, speed)
+            if not success:
+                return {"success": False, "message": "Failed to lift to safe height"}
+
+            # Step 2: Move horizontally to above target position
             pre_place_pose = position.copy()
-            pre_place_pose[2] += approach_height
+            pre_place_pose[2] = safe_height
 
             is_safe, msg = self.safety.check_workspace(arm, pre_place_pose + orientation)
             if not is_safe:
                 return {"success": False, "message": f"Pre-place pose unsafe: {msg}"}
 
-            print(f"  Moving to pre-place pose: {pre_place_pose}")
+            print(f"  Moving to above target: {pre_place_pose}")
             success = self.driver.move_to_pose(arm, pre_place_pose + orientation, speed)
             if not success:
                 return {"success": False, "message": "Failed to reach pre-place pose"}
 
-            # Step 2: Descend to target
+            # Step 3: Descend to target
             target_pose = position + orientation
             is_safe, msg = self.safety.check_workspace(arm, target_pose)
             if not is_safe:
@@ -191,12 +276,12 @@ class BaxterPrimitives:
             if not success:
                 return {"success": False, "message": "Failed to reach target"}
 
-            # Step 3: Open gripper
+            # Step 4: Open gripper
             print("  Opening gripper")
             self.driver.gripper_command(arm, "open")
             time.sleep(0.8)
 
-            # Step 4: Retract
+            # Step 5: Retract upward
             print("  Retracting")
             success = self.driver.move_to_pose(arm, pre_place_pose + orientation, speed * 0.5)
             if not success:
@@ -211,6 +296,96 @@ class BaxterPrimitives:
 
         except Exception as e:
             return {"success": False, "message": f"Place failed: {str(e)}"}
+
+    async def place_by_name(
+        self,
+        arm: str,
+        target_object_name: str,
+        relative_position: str = "next_to",
+        approach_height: float = 0.1,
+        speed: float = 0.3
+    ) -> Dict:
+        """Place held object relative to another object using vision.
+
+        Args:
+            arm: 'left' or 'right'
+            target_object_name: Name of reference object (e.g., "yellow block")
+            relative_position: Where to place relative to target:
+                - "next_to": 15cm to the side
+                - "on_top": On top of the object
+                - "behind": 15cm behind
+                - "in_front": 15cm in front
+            approach_height: Height offset for pre-place pose
+            speed: Motion speed ratio (0-1)
+
+        Returns:
+            Dict with 'success' (bool) and 'message' (str)
+        """
+        try:
+            print(f"[Primitive] PlaceByName: arm={arm}, target={target_object_name}, position={relative_position}")
+
+            # Step 1: Locate target object using multi-view
+            if self.multi_view_vlm:
+                print(f"  Locating target object: {target_object_name}...")
+                target_result = await self.locate_object_multiview(
+                    target_object_name,
+                    arm=arm,
+                    use_wrist_refinement=False
+                )
+
+                if not target_result.get('success') or not target_result.get('found'):
+                    return {
+                        "success": False,
+                        "message": f"Could not locate target object: {target_object_name}"
+                    }
+
+                target_position = target_result['position']
+                print(f"  Target object at: {target_position}")
+            else:
+                return {
+                    "success": False,
+                    "message": "Multi-view VLM not available (required for place_by_name)"
+                }
+
+            # Step 2: Calculate place position relative to target
+            place_position = target_position.copy()
+
+            if relative_position == "next_to":
+                # 15cm to the right side
+                place_position[1] += 0.15
+                # Place at table level (not target object height)
+                place_position[2] = -0.13
+            elif relative_position == "on_top":
+                # On top (add object height, assume ~5cm)
+                place_position[2] -= 0.05
+            elif relative_position == "behind":
+                # 15cm behind (negative X)
+                place_position[0] -= 0.15
+                place_position[2] = -0.13
+            elif relative_position == "in_front":
+                # 15cm in front (positive X)
+                place_position[0] += 0.15
+                place_position[2] = -0.13
+            else:
+                return {
+                    "success": False,
+                    "message": f"Unknown relative position: {relative_position}"
+                }
+
+            print(f"  Calculated place position: {place_position}")
+
+            # Step 3: Execute place
+            result = self.place(arm, place_position, approach_height, speed)
+
+            # Add vision info to result
+            result['target_object'] = target_object_name
+            result['relative_position'] = relative_position
+            result['target_location'] = target_position
+
+            return result
+
+        except Exception as e:
+            return {"success": False, "message": f"PlaceByName failed: {str(e)}"}
 
     def move_to(
         self,
@@ -325,20 +500,97 @@ class BaxterPrimitives:
         except Exception as e:
             return {"success": False, "message": f"Home failed: {str(e)}"}
 
+    async def locate_object_multiview(
+        self,
+        object_name: str,
+        arm: str = "right",
+        use_wrist_refinement: bool = True
+    ) -> Dict:
+        """Locate object using multi-view VLM approach.
+
+        Complete pipeline:
+        1. Phase 1: D455 + head camera for initial detection
+           - Retract arm to avoid occlusion
+           - Capture and process images from both cameras
+           - Cross-validate results
+        2. Phase 2: Wrist camera refinement (optional)
+           - Move wrist above estimated location
+           - Capture close-up view
+           - Fuse all views for final position
+
+        Args:
+            object_name: Name of object to locate
+            arm: Which arm to use for wrist camera ("left" or "right")
+            use_wrist_refinement: Whether to use wrist camera for refinement
+
+        Returns:
+            Dict with 'success', 'found', 'position', 'confidence', etc.
+        """
+        try:
+            if not self.multi_view_vlm:
+                return {
+                    "success": False,
+                    "message": "Multi-view VLM not available (requires VLM client and depth camera)"
+                }
+
+            print(f"[Primitive] LocateObjectMultiview: object={object_name}, arm={arm}")
+
+            # Use multi-view coordinator
+            result = await self.multi_view_vlm.locate_object_multiview(
+                object_name,
+                arm=arm,
+                use_wrist_refinement=use_wrist_refinement
+            )
+
+            # Check if object was found
+            # Smart detection: if we have valid position and confidence, consider it found
+            found = result.get('found', False)
+            confidence = result.get('confidence', 0)
+            position = result.get('position', [0, 0, 0])
+
+            # Override found=false if we have valid detection data
+            if not found and confidence > 50 and any(p != 0 for p in position):
+                print(f"[Primitive] ⚠ Overriding found=false: confidence={confidence}%, position={position}")
+                found = True
+
+            if result and found:
+                return {
+                    "success": True,
+                    "found": True,
+                    "position": result['position'],
+                    "confidence": result['confidence'],
+                    "description": result.get('description', ''),
+                    "multi_view_validated": result.get('multi_view_validated', False),
+                    "wrist_validated": result.get('wrist_validated', False),
+                    "message": f"Object '{object_name}' located using multi-view approach"
+                }
+            else:
+                return {
+                    "success": True,
+                    "found": False,
+                    "message": f"Object '{object_name}' not found"
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Multi-view localization failed: {str(e)}"
+            }
+
     async def pick_by_name(
         self,
         arm: str,
         object_name: str,
-        camera: str = "right_hand",
+        use_d455: bool = True,
         approach_height: float = 0.1,
         speed: float = 0.3
     ) -> Dict:
         """Pick up an object by name using vision.
 
         Args:
-            arm: 'left' or 'right'
+            arm: 'left', 'right', or 'auto' (auto-select based on Y-coordinate)
             object_name: Name of object to pick (e.g., "red cup", "blue box")
-            camera: Camera to use for vision
+            use_d455: Use D455 depth camera (True) or wrist camera (False)
             approach_height: Height offset for pre-grasp pose
             speed: Motion speed ratio (0-1)
 
@@ -349,86 +601,120 @@ class BaxterPrimitives:
             if not self.vlm_client:
                 return {"success": False, "message": "VLM client not configured"}
 
-            print(f"[Primitive] PickByName: arm={arm}, object={object_name}")
+            print(f"[Primitive] PickByName: arm={arm}, object={object_name}, use_d455={use_d455}")
 
-            # Capture image
-            print(f"  Capturing image from {camera}...")
-            image_bytes = self.driver.capture_image(camera)
-            if not image_bytes:
-                return {"success": False, "message": "Failed to capture image"}
+            # Use multi-view localization if available (recommended)
+            if use_d455 and self.multi_view_vlm:
+                print(f"  Using multi-view localization (complete pipeline)...")
 
-            # Locate object using VLM (with depth enhancement if available)
-            print(f"  Locating {object_name} in image...")
-            workspace_bounds = {
-                'x': self.safety.workspace_limits['x'],
-                'y': self.safety.workspace_limits['y'],
-                'z': self.safety.workspace_limits['z'],
-            }
+                # Use complete multi-view pipeline with:
+                # - Arm retraction to avoid occlusion
+                # - Coordinate transformation
+                # - Calibration offset
+                # Note: Use 'right' for retraction if arm is 'auto'
+                retract_arm = 'right' if arm == 'auto' else arm
 
-            # Try depth-enhanced localization if depth camera is available
-            if self.driver.has_depth_camera():
-                print(f"  Using depth-enhanced localization...")
-                rgb, depth = self.driver.capture_rgbd()
-                if rgb is not None and depth is not None:
-                    # Convert RGB to JPEG
-                    import cv2
-                    success, jpeg_buffer = cv2.imencode('.jpg', rgb)
-                    if success:
-                        image_bytes = jpeg_buffer.tobytes()
-                        depth_camera = self.driver.get_depth_camera_driver()
-                        location = await self.vlm_client.locate_object_with_depth(
-                            image_bytes,
-                            depth,
-                            object_name,
-                            depth_camera,
-                            workspace_bounds
-                        )
+                location_result = await self.locate_object_multiview(
+                    object_name,
+                    arm=retract_arm,
+                    use_wrist_refinement=False  # Only Phase 1 for speed
+                )
+
+                if not location_result.get('success') or not location_result.get('found'):
+                    return {
+                        "success": False,
+                        "message": f"Could not locate {object_name}",
+                        "vlm_response": location_result
+                    }
+
+                position = location_result['position']
+                confidence = location_result['confidence']
+
+                print(f"  Found {object_name} at position {position} (confidence: {confidence}%)")
+
+                # Auto-select arm based on Y-coordinate if requested
+                if arm == 'auto':
+                    selected_arm = self.driver.select_arm_by_y_coordinate(position, y_threshold=0.16)
+                    print(f"  Auto-selected {selected_arm} arm (Y={position[1]:.3f}m, threshold=0.16m)")
+                    arm = selected_arm
+
+            else:
+                # Fallback to simple VLM localization (less accurate)
+                print(f"  Using simple VLM localization (fallback)...")
+
+                workspace_bounds = {
+                    'x': self.safety.workspace_limits['x'],
+                    'y': self.safety.workspace_limits['y'],
+                    'z': self.safety.workspace_limits['z'],
+                }
+
+                # Capture image and locate based on camera choice
+                if use_d455 and self.driver.has_depth_camera():
+                    print(f"  Using D455 depth camera...")
+                    rgb, depth = self.driver.capture_rgbd()
+                    if rgb is not None and depth is not None:
+                        # Convert RGB to JPEG
+                        import cv2
+                        success, jpeg_buffer = cv2.imencode('.jpg', rgb)
+                        if success:
+                            image_bytes = jpeg_buffer.tobytes()
+
+                            # Use depth-enhanced localization (VLM + depth)
+                            depth_camera = self.driver.get_depth_camera_driver()
+                            location = await self.vlm_client.locate_object_with_depth(
+                                image_bytes,
+                                depth,
+                                object_name,
+                                depth_camera,
+                                workspace_bounds
+                            )
+                        else:
+                            return {"success": False, "message": "Failed to encode D455 image"}
                     else:
-                        # Fallback to VLM-only
-                        location = await self.vlm_client.locate_object(
-                            image_bytes,
-                            object_name,
-                            workspace_bounds
-                        )
+                        return {"success": False, "message": "Failed to capture from D455"}
                 else:
-                    # Fallback to VLM-only
+                    # Fallback to wrist camera (VLM-only, less accurate)
+                    camera = f"{arm}_hand"
+                    print(f"  Using wrist camera: {camera}...")
+                    image_bytes = self.driver.capture_image(camera)
+                    if not image_bytes:
+                        return {"success": False, "message": "Failed to capture image"}
+
+                    # VLM-only localization (less accurate)
                     location = await self.vlm_client.locate_object(
                         image_bytes,
                         object_name,
                         workspace_bounds
                     )
-            else:
-                # Use VLM-only localization
-                location = await self.vlm_client.locate_object(
-                    image_bytes,
-                    object_name,
-                    workspace_bounds
-                )
 
-            if not location or not location['found']:
-                return {
-                    "success": False,
-                    "message": f"Could not locate {object_name} in image",
-                    "vlm_response": location
-                }
+                if not location or not location['found']:
+                    return {
+                        "success": False,
+                        "message": f"Could not locate {object_name} in image",
+                        "vlm_response": location
+                    }
 
-            if location['confidence'] < 50:
-                return {
-                    "success": False,
-                    "message": f"Low confidence ({location['confidence']}%) in object location",
-                    "vlm_response": location
-                }
+                if location['confidence'] < 50:
+                    return {
+                        "success": False,
+                        "message": f"Low confidence ({location['confidence']}%) in object location",
+                        "vlm_response": location
+                    }
 
-            # Extract position
-            position = location['position']
-            print(f"  Found {object_name} at position {position} (confidence: {location['confidence']}%)")
+                # Extract position
+                position = location['position']
+                confidence = location['confidence']
+                print(f"  Found {object_name} at position {position} (confidence: {confidence}%)")
+
+                location_result = location
 
             # Execute pick
             result = self.pick(arm, position, approach_height, speed)
 
             # Add vision info to result
-            result['vlm_response'] = location
+            result['vlm_response'] = location_result
             result['object_name'] = object_name
+            result['confidence'] = confidence
 
             return result
 
@@ -438,13 +724,13 @@ class BaxterPrimitives:
     async def locate_object(
         self,
         object_name: str,
-        camera: str = "right_hand"
+        use_d455: bool = True
     ) -> Dict:
         """Locate an object using vision without moving the robot.
 
         Args:
             object_name: Name of object to locate
-            camera: Camera to use for vision
+            use_d455: Use D455 depth camera (True) or wrist camera (False)
 
         Returns:
             Dict with object location information
@@ -453,27 +739,50 @@ class BaxterPrimitives:
             if not self.vlm_client:
                 return {"success": False, "message": "VLM client not configured"}
 
-            print(f"[Primitive] LocateObject: object={object_name}")
+            print(f"[Primitive] LocateObject: object={object_name}, use_d455={use_d455}")
 
-            # Capture image
-            print(f"  Capturing image from {camera}...")
-            image_bytes = self.driver.capture_image(camera)
-            if not image_bytes:
-                return {"success": False, "message": "Failed to capture image"}
-
-            # Locate object using VLM
-            print(f"  Locating {object_name} in image...")
             workspace_bounds = {
                 'x': self.safety.workspace_limits['x'],
                 'y': self.safety.workspace_limits['y'],
                 'z': self.safety.workspace_limits['z'],
             }
 
-            location = await self.vlm_client.locate_object(
-                image_bytes,
-                object_name,
-                workspace_bounds
-            )
+            # Capture image and locate based on camera choice
+            if use_d455 and self.driver.has_depth_camera():
+                print(f"  Using D455 depth camera with depth enhancement...")
+                rgb, depth = self.driver.capture_rgbd()
+                if rgb is not None and depth is not None:
+                    import cv2
+                    success, jpeg_buffer = cv2.imencode('.jpg', rgb)
+                    if success:
+                        image_bytes = jpeg_buffer.tobytes()
+
+                        # Use depth-enhanced localization (VLM + depth)
+                        depth_camera = self.driver.get_depth_camera_driver()
+                        location = await self.vlm_client.locate_object_with_depth(
+                            image_bytes,
+                            depth,
+                            object_name,
+                            depth_camera,
+                            workspace_bounds
+                        )
+                    else:
+                        return {"success": False, "message": "Failed to encode D455 image"}
+                else:
+                    return {"success": False, "message": "Failed to capture from D455"}
+            else:
+                # Fallback to right wrist camera (VLM-only, less accurate)
+                print(f"  Using right wrist camera (VLM-only estimation)...")
+                image_bytes = self.driver.capture_image("right_hand")
+                if not image_bytes:
+                    return {"success": False, "message": "Failed to capture image"}
+
+                # VLM-only localization (less accurate)
+                location = await self.vlm_client.locate_object(
+                    image_bytes,
+                    object_name,
+                    workspace_bounds
+                )
 
             if not location:
                 return {"success": False, "message": "VLM request failed"}
@@ -485,17 +794,19 @@ class BaxterPrimitives:
                 "position": location['position'],
                 "confidence": location['confidence'],
                 "description": location['description'],
-                "bounding_box": location['bounding_box']
+                "bounding_box": location['bounding_box'],
+                "depth_enhanced": location.get('depth_enhanced', False)
             }
 
         except Exception as e:
             return {"success": False, "message": f"LocateObject failed: {str(e)}"}
 
-    async def describe_scene(self, camera: str = "right_hand") -> Dict:
+    async def describe_scene(self, use_d455: bool = True, language: str = "zh") -> Dict:
         """Get a description of the current scene.
 
         Args:
-            camera: Camera to use for vision
+            use_d455: Use D455 depth camera (True) or wrist camera (False)
+            language: Response language ('zh' for Chinese, 'en' for English)
 
         Returns:
             Dict with scene description
@@ -504,15 +815,30 @@ class BaxterPrimitives:
             if not self.vlm_client:
                 return {"success": False, "message": "VLM client not configured"}
 
-            print(f"[Primitive] DescribeScene: camera={camera}")
+            print(f"[Primitive] DescribeScene: use_d455={use_d455}, language={language}")
 
-            # Capture image
-            image_bytes = self.driver.capture_image(camera)
-            if not image_bytes:
-                return {"success": False, "message": "Failed to capture image"}
+            # Capture image based on camera choice
+            if use_d455 and self.driver.has_depth_camera():
+                print(f"  Using D455 depth camera...")
+                rgb, depth = self.driver.capture_rgbd()
+                if rgb is not None:
+                    import cv2
+                    success, jpeg_buffer = cv2.imencode('.jpg', rgb)
+                    if success:
+                        image_bytes = jpeg_buffer.tobytes()
+                    else:
+                        return {"success": False, "message": "Failed to encode D455 image"}
+                else:
+                    return {"success": False, "message": "Failed to capture from D455"}
+            else:
+                # Fallback to right wrist camera
+                print(f"  Using right wrist camera...")
+                image_bytes = self.driver.capture_image("right_hand")
+                if not image_bytes:
+                    return {"success": False, "message": "Failed to capture image"}
 
-            # Get scene description
-            description = await self.vlm_client.describe_scene(image_bytes)
+            # Get scene description in specified language
+            description = await self.vlm_client.describe_scene(image_bytes, language=language)
 
             return {
                 "success": True,
@@ -523,11 +849,11 @@ class BaxterPrimitives:
         except Exception as e:
             return {"success": False, "message": f"DescribeScene failed: {str(e)}"}
 
-    async def identify_objects(self, camera: str = "right_hand") -> Dict:
+    async def identify_objects(self, use_d455: bool = True) -> Dict:
         """Identify all objects in the scene.
 
         Args:
-            camera: Camera to use for vision
+            use_d455: Use D455 depth camera (True) or wrist camera (False)
 
         Returns:
             Dict with list of identified objects
@@ -536,12 +862,27 @@ class BaxterPrimitives:
             if not self.vlm_client:
                 return {"success": False, "message": "VLM client not configured"}
 
-            print(f"[Primitive] IdentifyObjects: camera={camera}")
+            print(f"[Primitive] IdentifyObjects: use_d455={use_d455}")
 
-            # Capture image
-            image_bytes = self.driver.capture_image(camera)
-            if not image_bytes:
-                return {"success": False, "message": "Failed to capture image"}
+            # Capture image based on camera choice
+            if use_d455 and self.driver.has_depth_camera():
+                print(f"  Using D455 depth camera...")
+                rgb, depth = self.driver.capture_rgbd()
+                if rgb is not None:
+                    import cv2
+                    success, jpeg_buffer = cv2.imencode('.jpg', rgb)
+                    if success:
+                        image_bytes = jpeg_buffer.tobytes()
+                    else:
+                        return {"success": False, "message": "Failed to encode D455 image"}
+                else:
+                    return {"success": False, "message": "Failed to capture from D455"}
+            else:
+                # Fallback to right wrist camera
+                print(f"  Using right wrist camera...")
+                image_bytes = self.driver.capture_image("right_hand")
+                if not image_bytes:
+                    return {"success": False, "message": "Failed to capture image"}
 
             # Identify objects
             objects = await self.vlm_client.identify_objects(image_bytes)

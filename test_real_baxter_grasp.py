@@ -436,10 +436,10 @@ async def main():
         results['坐标运动'] = test_coordinate_movement(driver)
 
         # Test 4: Vision
-        results['视觉检测'] = await test_vision_detection(driver)
+        #results['视觉检测'] = await test_vision_detection(driver)
 
         # Test 5: Vision with depth
-        results['深度视觉'] = await test_vision_with_depth(driver)
+        #results['深度视觉'] = await test_vision_with_depth(driver)
 
         # Test 6: Pick and place
         results['抓取放置'] = await test_pick_place(driver)

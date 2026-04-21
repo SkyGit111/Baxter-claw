@@ -122,6 +122,26 @@ class SafetyValidator:
 
         return True, ""
 
+    def validate_pose(self, pose: List[float]) -> bool:
+        """Validate if a pose is safe (simplified version of check_workspace).
+
+        Args:
+            pose: [x, y, z, roll, pitch, yaw]
+
+        Returns:
+            True if pose is safe, False otherwise
+        """
+        is_safe, _ = self.check_workspace("right", pose)
+        return is_safe
+
+    def get_workspace_bounds(self) -> Dict:
+        """Get workspace bounds for vision system.
+
+        Returns:
+            Dict with 'x', 'y', 'z' bounds
+        """
+        return self.workspace_limits
+
     def check_speed(self, speed: float) -> Tuple[bool, str]:
         """Check if speed is within safe limits.
 

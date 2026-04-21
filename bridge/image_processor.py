@@ -8,7 +8,7 @@ Handles preprocessing of images from different cameras:
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, List
 
 
 class ImageProcessor:
@@ -383,6 +383,87 @@ class ImageProcessor:
             depth_viz = self.create_depth_visualization(depth_image)
             cv2.imwrite(f"{prefix}_depth.jpg", depth_viz)
             print(f"[ImageProcessor] Saved {prefix}_depth.jpg")
+
+    def save_annotated_debug_images(
+        self,
+        prefix: str,
+        raw_image: np.ndarray,
+        depth_image: Optional[np.ndarray] = None,
+        bbox: Optional[List[int]] = None,
+        center_point: Optional[Tuple[int, int]] = None,
+        depth_value: Optional[float] = None,
+        position_camera: Optional[np.ndarray] = None,
+        position_base: Optional[np.ndarray] = None
+    ):
+        """Save debug images with annotations.
+
+        Args:
+            prefix: Filename prefix
+            raw_image: Original RGB image
+            depth_image: Depth image
+            bbox: Bounding box [x1, y1, x2, y2]
+            center_point: Center point (x, y)
+            depth_value: Depth value at center (mm)
+            position_camera: 3D position in camera frame
+            position_base: 3D position in base frame
+        """
+        try:
+            # Annotate RGB image
+            annotated = raw_image.copy()
+
+            if bbox is not None:
+                # Draw bounding box
+                cv2.rectangle(annotated, (bbox[0], bbox[1]), (bbox[2], bbox[3]),
+                            (0, 255, 0), 3)
+                # Add label
+                cv2.putText(annotated, "VLM Detection", (bbox[0], bbox[1]-10),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            if center_point is not None:
+                # Draw center point
+                cv2.circle(annotated, center_point, 8, (0, 0, 255), -1)
+                cv2.circle(annotated, center_point, 15, (0, 0, 255), 3)
+
+                # Add depth value
+                if depth_value is not None:
+                    text = f"Depth: {depth_value:.0f}mm"
+                    cv2.putText(annotated, text, (center_point[0]+20, center_point[1]),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+            # Add position info at top
+            y_offset = 30
+            if position_camera is not None:
+                text = f"Cam: [{position_camera[0]:.3f}, {position_camera[1]:.3f}, {position_camera[2]:.3f}]"
+                cv2.putText(annotated, text, (10, y_offset),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                y_offset += 30
+
+            if position_base is not None:
+                text = f"Base: [{position_base[0]:.3f}, {position_base[1]:.3f}, {position_base[2]:.3f}]"
+                cv2.putText(annotated, text, (10, y_offset),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+            cv2.imwrite(f"{prefix}_annotated.jpg", annotated)
+            print(f"[ImageProcessor] Saved {prefix}_annotated.jpg")
+
+            # Annotate depth image if provided
+            if depth_image is not None and center_point is not None:
+                depth_viz = self.create_depth_visualization(depth_image)
+
+                # Draw center point on depth
+                cv2.circle(depth_viz, center_point, 8, (255, 255, 255), -1)
+                cv2.circle(depth_viz, center_point, 15, (255, 255, 255), 3)
+
+                # Draw bbox on depth
+                if bbox is not None:
+                    cv2.rectangle(depth_viz, (bbox[0], bbox[1]), (bbox[2], bbox[3]),
+                                (255, 255, 255), 2)
+
+                cv2.imwrite(f"{prefix}_depth_annotated.jpg", depth_viz)
+                print(f"[ImageProcessor] Saved {prefix}_depth_annotated.jpg")
+
+        except Exception as e:
+            print(f"[ImageProcessor] Failed to save annotated images: {e}")
 
 
 # Test code

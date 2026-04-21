@@ -32,6 +32,19 @@ class PlaceRequest(BaseModel):
     )
 
 
+class PlaceByNameRequest(BaseModel):
+    """Request to place object relative to another object using vision."""
+    arm: Literal["left", "right"] = Field(default="right", description="Which arm to use")
+    target_object_name: str = Field(..., description="Name of reference object (e.g., 'yellow block')")
+    relative_position: str = Field(
+        default="next_to",
+        description="Where to place: 'next_to', 'on_top', 'behind', 'in_front'"
+    )
+    approach_height: Optional[float] = Field(
+        default=0.1, description="Height offset for pre-place pose"
+    )
+
+
 class MoveToRequest(BaseModel):
     """Request to move end-effector to specified pose."""
     arm: Literal["left", "right"] = Field(default="right", description="Which arm to use")
@@ -92,24 +105,26 @@ class PickByNameRequest(BaseModel):
     """Request to pick object by name using vision."""
     arm: Literal["left", "right"] = Field(default="right", description="Which arm to use")
     object_name: str = Field(..., description="Name of object to pick (e.g., 'red cup')")
-    camera: str = Field(default="right_hand", description="Camera to use for vision")
+    use_d455: bool = Field(default=True, description="Use D455 depth camera (recommended)")
     approach_height: Optional[float] = Field(default=0.1, description="Height offset for pre-grasp pose")
 
 
 class LocateObjectRequest(BaseModel):
     """Request to locate object using vision."""
     object_name: str = Field(..., description="Name of object to locate")
-    camera: str = Field(default="right_hand", description="Camera to use for vision")
+    use_d455: bool = Field(default=True, description="Use D455 depth camera (recommended)")
+    arm: Optional[str] = Field(default="right", description="Which arm to use for multi-view (left/right)")
 
 
 class DescribeSceneRequest(BaseModel):
     """Request to describe the scene."""
-    camera: str = Field(default="right_hand", description="Camera to use for vision")
+    use_d455: bool = Field(default=True, description="Use D455 depth camera (recommended)")
+    language: str = Field(default="zh", description="Response language (zh/en)")
 
 
 class IdentifyObjectsRequest(BaseModel):
     """Request to identify all objects in scene."""
-    camera: str = Field(default="right_hand", description="Camera to use for vision")
+    use_d455: bool = Field(default=True, description="Use D455 depth camera (recommended)")
 
 
 class CaptureImageRequest(BaseModel):
@@ -121,12 +136,15 @@ class VisionResponse(BaseModel):
     """Response from vision operations."""
     success: bool
     message: str
+    found: Optional[bool] = None  # Whether object was found
     object_name: Optional[str] = None
     position: Optional[List[float]] = None
     confidence: Optional[float] = None
     description: Optional[str] = None
     bounding_box: Optional[List[int]] = None
     objects: Optional[List[Dict]] = None
+    multi_view_validated: Optional[bool] = None  # Multi-view validation status
+    wrist_validated: Optional[bool] = None  # Wrist camera validation status
 
 
 # Dual-arm coordination models

@@ -16,6 +16,7 @@ from .models import (
     DisableRequest,
     PickRequest,
     PlaceRequest,
+    PlaceByNameRequest,
     MoveToRequest,
     HomeRequest,
     GripperRequest,
@@ -184,6 +185,31 @@ async def place(req: PlaceRequest) -> PrimitiveResponse:
         raise HTTPException(status_code=400, detail=f"Place failed: {str(e)}")
 
 
+@app.post("/primitives/place_by_name")
+async def place_by_name(req: PlaceByNameRequest) -> PrimitiveResponse:
+    """Execute place_by_name primitive.
+
+    Places the held object relative to another object using vision.
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        result = await manager.primitives.place_by_name(
+            arm=req.arm,
+            target_object_name=req.target_object_name,
+            relative_position=req.relative_position,
+            approach_height=req.approach_height or 0.1
+        )
+
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'PlaceByName failed'))
+
+        return PrimitiveResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"PlaceByName failed: {str(e)}")
+
+
 @app.post("/primitives/move_to")
 async def move_to(req: MoveToRequest) -> PrimitiveResponse:
     """Execute move_to primitive.
@@ -264,8 +290,40 @@ async def camera(camera: str = "right_hand"):
 
     try:
         import base64
+        import cv2
 
-        # Capture image
+        # Handle D455 depth camera separately
+        if camera == "d455":
+            rgb_image, depth_image = manager.driver.capture_rgbd()
+
+            if rgb_image is None:
+                return {
+                    "success": False,
+                    "message": "D455 camera not available or failed to capture",
+                    "camera": camera
+                }
+
+            # Encode RGB image as JPEG
+            success, jpeg_buffer = cv2.imencode('.jpg', rgb_image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if not success:
+                return {
+                    "success": False,
+                    "message": "Failed to encode D455 image",
+                    "camera": camera
+                }
+
+            image_bytes = jpeg_buffer.tobytes()
+            image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+            return {
+                "success": True,
+                "message": f"Image captured from {camera}",
+                "camera": camera,
+                "image": image_b64,
+                "size": len(image_bytes)
+            }
+
+        # Capture image from Baxter cameras
         image_bytes = manager.driver.capture_image(camera)
 
         if not image_bytes:
@@ -307,7 +365,7 @@ async def pick_by_name(req: PickByNameRequest) -> VisionResponse:
         result = await manager.primitives.pick_by_name(
             req.arm,
             req.object_name,
-            req.camera,
+            req.use_d455,
             req.approach_height or 0.1
         )
 
@@ -332,7 +390,7 @@ async def locate_object(req: LocateObjectRequest) -> VisionResponse:
 
     result = await manager.primitives.locate_object(
         req.object_name,
-        req.camera
+        req.use_d455
     )
 
     return VisionResponse(**result)
@@ -347,7 +405,7 @@ async def describe_scene(req: DescribeSceneRequest) -> VisionResponse:
     if not manager.vlm_client:
         raise HTTPException(status_code=400, detail="VLM client not configured")
 
-    result = await manager.primitives.describe_scene(req.camera)
+    result = await manager.primitives.describe_scene(req.use_d455, req.language)
 
     return VisionResponse(**result)
 
@@ -361,9 +419,37 @@ async def identify_objects(req: IdentifyObjectsRequest) -> VisionResponse:
     if not manager.vlm_client:
         raise HTTPException(status_code=400, detail="VLM client not configured")
 
-    result = await manager.primitives.identify_objects(req.camera)
+    result = await manager.primitives.identify_objects(req.use_d455)
 
     return VisionResponse(**result)
+
+
+@app.post("/vision/locate_multiview")
+async def locate_multiview(req: LocateObjectRequest) -> VisionResponse:
+    """Locate object using multi-view VLM approach.
+
+    Uses D455 + head camera for initial detection, then optionally
+    uses wrist camera for close-up refinement.
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    if not manager.vlm_client:
+        raise HTTPException(status_code=400, detail="VLM client not configured")
+
+    try:
+        result = await manager.primitives.locate_object_multiview(
+            object_name=req.object_name,
+            arm=req.arm or "right",
+            use_wrist_refinement=True
+        )
+
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Multi-view localization failed'))
+
+        return VisionResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Multi-view localization error: {str(e)}")
 
 
 # Dual-arm coordination endpoints

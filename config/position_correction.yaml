@@ -1,0 +1,11 @@
+d455_position_correction:
+  average_error_after_mm: 29.25895397753755
+  average_error_before_mm: 200.95439661472062
+  description: Position correction offset based on empirical measurements (OLD - disabled after recalibration 2026-04-20)
+  enabled: false  # 禁用旧校正，重新标定后需要重新计算
+  measurement_date: '2026-04-17'
+  offset:
+    x: 0.13066666666666668
+    y: -0.15033333333333335
+    z: -0.007999999999999998
+  sample_size: 3

@@ -268,6 +268,9 @@ Respond in JSON format:
             else:
                 text = str(response)
 
+            print(f"[VLM] Raw response text (first 500 chars):")
+            print(f"  {text[:500]}...")
+
             # Try to extract JSON from response
             # Look for JSON block in markdown code fence or plain text
             if '```json' in text:
@@ -287,14 +290,30 @@ Respond in JSON format:
 
             # Parse JSON
             result = json.loads(json_text)
+            print(f"[VLM] Parsed JSON result:")
+            print(f"  found: {result.get('found')}")
+            print(f"  confidence: {result.get('confidence')}")
+            print(f"  position: {result.get('position')}")
+
+            # Smart detection: if VLM provides position and confidence > 0,
+            # it likely found the object even if 'found' field is missing or false
+            found = result.get('found', False)
+            confidence = result.get('confidence', 0.0)
+            position = result.get('position', [0.0, 0.0, 0.0])
+            bounding_box = result.get('bounding_box', [0, 0, 0, 0])
+
+            # Override found=false if we have valid detection data
+            if not found and confidence > 50 and any(p != 0.0 for p in position):
+                print(f"[VLM] ⚠ Overriding found=false because confidence={confidence}% and position is valid")
+                found = True
 
             # Validate and normalize
             return {
-                'found': result.get('found', False),
-                'position': result.get('position', [0.0, 0.0, 0.0]),
-                'confidence': result.get('confidence', 0.0),
+                'found': found,
+                'position': position,
+                'confidence': confidence,
                 'description': result.get('description', ''),
-                'bounding_box': result.get('bounding_box', [0, 0, 0, 0]),
+                'bounding_box': bounding_box,
             }
 
         except Exception as e:
@@ -308,11 +327,12 @@ Respond in JSON format:
                 'bounding_box': [0, 0, 0, 0],
             }
 
-    async def describe_scene(self, image_bytes: bytes) -> str:
+    async def describe_scene(self, image_bytes: bytes, language: str = "zh") -> str:
         """Get a general description of the scene.
 
         Args:
             image_bytes: JPEG image data
+            language: Response language ('zh' for Chinese, 'en' for English)
 
         Returns:
             Text description of the scene
@@ -320,7 +340,16 @@ Respond in JSON format:
         try:
             image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
-            prompt = """Describe this scene from a robot's perspective. Include:
+            if language == "zh":
+                prompt = """请用中文描述这个场景（从机器人的视角）。包括：
+1. 可见的物体有哪些
+2. 它们的大致位置
+3. 任何值得注意的特征或障碍物
+4. 对机器人操作任务的建议
+
+请简洁明了，重点关注对机器人控制有用的信息。"""
+            else:
+                prompt = """Describe this scene from a robot's perspective. Include:
 1. What objects are visible
 2. Their approximate locations
 3. Any notable features or obstacles
@@ -448,10 +477,18 @@ Respond in JSON format:
             center_x = (bbox[0] + bbox[2]) // 2
             center_y = (bbox[1] + bbox[3]) // 2
 
-            print(f"  VLM detected object at pixel ({center_x}, {center_y})")
-            print(f"  VLM estimated position: {location_2d['position']}")
+            print(f"  [Debug] VLM bounding box: {bbox}")
+            print(f"  [Debug] Bbox center pixel: ({center_x}, {center_y})")
+            print(f"  [Debug] VLM estimated position: {location_2d['position']}")
 
             # Step 3: Get real 3D position from depth camera
+            # Check depth value at center
+            if center_y < depth_image.shape[0] and center_x < depth_image.shape[1]:
+                depth_at_center = depth_image[center_y, center_x]
+                print(f"  [Debug] Depth at center pixel: {depth_at_center}mm")
+            else:
+                print(f"  [Debug] WARNING: Center pixel out of bounds!")
+
             point_3d = depth_camera_driver.get_3d_point_from_pixel(
                 depth_image,
                 center_x,
@@ -460,14 +497,18 @@ Respond in JSON format:
             )
 
             if point_3d is None:
-                print(f"  Warning: No valid depth at object center, using VLM estimate")
+                print(f"  [Debug] WARNING: No valid depth at object center!")
+                print(f"  [Debug] Using VLM estimate (unreliable)")
                 return location_2d
 
             # Step 4: Position is in camera frame, will be transformed by caller
             real_position = list(point_3d)
 
-            print(f"  Depth camera measured position (camera frame): {real_position}")
-            print(f"  Position difference: {[real_position[i] - location_2d['position'][i] for i in range(3)]}")
+            print(f"  [Debug] Depth camera measured position (camera frame): {real_position}")
+            vlm_pos = location_2d['position']
+            diff = [real_position[i] - vlm_pos[i] for i in range(3)]
+            print(f"  [Debug] VLM vs Depth difference: {diff}")
+            print(f"  [Debug] Difference magnitude: {np.linalg.norm(diff):.3f}m")
 
             # Return enhanced result
             return {

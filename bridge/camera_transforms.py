@@ -24,6 +24,10 @@ class CameraTransforms:
         # D455 hand-eye calibration (camera to base)
         self.d455_to_base = None
 
+        # Position correction offset (empirical calibration)
+        self.position_correction = None
+        self._load_position_correction()
+
         if calibration_file:
             self._load_d455_calibration(calibration_file)
         else:
@@ -39,6 +43,34 @@ class CameraTransforms:
         # Head camera is approximately at [0.05, 0, 0.4] relative to base
         # with a downward tilt of about 45 degrees
         self._init_head_camera_transform()
+
+    def _load_position_correction(self):
+        """Load position correction offset from config file."""
+        try:
+            correction_file = "config/position_correction.yaml"
+            with open(correction_file, 'r') as f:
+                config = yaml.safe_load(f)
+
+            correction_config = config.get('d455_position_correction', {})
+
+            if correction_config.get('enabled', False):
+                offset = correction_config.get('offset', {})
+                self.position_correction = np.array([
+                    offset.get('x', 0.0),
+                    offset.get('y', 0.0),
+                    offset.get('z', 0.0)
+                ])
+                print(f"[CameraTransforms] Loaded position correction: {self.position_correction}")
+            else:
+                print(f"[CameraTransforms] Position correction disabled")
+                self.position_correction = None
+
+        except FileNotFoundError:
+            print(f"[CameraTransforms] No position correction file found (optional)")
+            self.position_correction = None
+        except Exception as e:
+            print(f"[CameraTransforms] Warning: Could not load position correction: {e}")
+            self.position_correction = None
 
     def _load_d455_calibration(self, filepath: str):
         """Load D455 hand-eye calibration from YAML file.
@@ -123,7 +155,13 @@ class CameraTransforms:
         point_base_homo = self.d455_to_base @ point_homo
 
         # Convert back to 3D
-        return point_base_homo[:3]
+        point_base = point_base_homo[:3]
+
+        # Apply position correction if available
+        if self.position_correction is not None:
+            point_base = point_base + self.position_correction
+
+        return point_base
 
     def transform_head_to_base(self, point_camera: np.ndarray) -> np.ndarray:
         """Transform point from head camera frame to robot base frame.

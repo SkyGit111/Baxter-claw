@@ -34,17 +34,27 @@ class MultiViewVLMCoordinator:
        - Fuse all views for final estimate
     """
 
-    def __init__(self, driver, vlm_client, safety_validator):
+    def __init__(self, driver, vlm_client, safety_validator, debug=False):
         """Initialize multi-view coordinator.
 
         Args:
             driver: BaxterDriver instance
             vlm_client: VLMClient instance
             safety_validator: SafetyValidator instance
+            debug: Enable debug mode (save debug images)
         """
         self.driver = driver
         self.vlm = vlm_client
         self.safety = safety_validator
+        self.debug = debug
+
+        # Calibration offset (from empirical testing)
+        # Based on 8 test samples:
+        # X: +13.29 cm ± 0.69 cm (stable)
+        # Y: -26.44 cm ± 0.66 cm (stable)
+        # Z: -6.01 cm ± 6.19 cm (unstable, use conservative -5 cm)
+        self.calibration_offset = np.array([0.1329, -0.2644, -0.05])
+        print(f"[MultiView] Calibration offset: {self.calibration_offset}")
 
         # Initialize coordinate transforms
         print("[MultiView] Initializing coordinate transforms...")
@@ -62,9 +72,6 @@ class MultiViewVLMCoordinator:
         # Camera state tracking
         self._head_camera_active = False
         self._wrist_camera_active = False
-
-        # Debug mode
-        self.debug = True  # Save debug images
 
     async def locate_object_multiview(
         self,
@@ -123,22 +130,34 @@ class MultiViewVLMCoordinator:
     ) -> Optional[Dict]:
         """Phase 1: Use D455 + head camera for initial detection."""
 
-        # Step 1: Retract arm to avoid occlusion
-        print("[Phase1] Step 1: Retracting arm to avoid occlusion...")
+        # Step 1: Retract both arms to avoid occlusion
+        print("[Phase1] Step 1: Retracting arms to avoid occlusion...")
+
+        # Retract the specified arm
         success = await self._retract_arm(arm)
         if not success:
-            print("[Phase1] ⚠ Warning: Failed to retract arm, continuing anyway...")
+            print(f"[Phase1] ⚠ Warning: Failed to retract {arm} arm, continuing anyway...")
+
+        # Also retract the other arm
+        other_arm = 'left' if arm == 'right' else 'right'
+        success_other = await self._retract_arm(other_arm)
+        if not success_other:
+            print(f"[Phase1] ⚠ Warning: Failed to retract {other_arm} arm, continuing anyway...")
 
         # Wait for motion to settle
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5)
 
         # Step 2: Capture and process D455 images
         print("[Phase1] Step 2: Capturing from D455 depth camera...")
         d455_result = await self._capture_and_analyze_d455(object_name, "phase1")
 
-        # Step 3: Capture and process head camera
-        print("[Phase1] Step 3: Capturing from head camera...")
-        head_result = await self._capture_and_analyze_head(object_name)
+        # Step 3: Capture and process head camera (optional)
+        head_result = None
+        if hasattr(self, '_head_camera_available') and self._head_camera_available:
+            print("[Phase1] Step 3: Capturing from head camera...")
+            head_result = await self._capture_and_analyze_head(object_name)
+        else:
+            print("[Phase1] Step 3: Skipping head camera (disabled)")
 
         # Step 4: Cross-validate and fuse results
         print("[Phase1] Step 4: Cross-validating results...")
@@ -204,17 +223,47 @@ class MultiViewVLMCoordinator:
         if result and result.get('found'):
             # Apply coordinate transformation
             position_camera = np.array(result['position'])
+
+            print(f"[D455] Coordinate transformation:")
+            print(f"  Position (camera frame): {position_camera}")
+
             position_base = self.transforms.transform_d455_to_base(position_camera)
 
             if position_base is not None:
-                result['position'] = position_base.tolist()
+                # Apply calibration offset (from empirical testing)
+                position_calibrated = position_base + self.calibration_offset
+
+                result['position'] = position_calibrated.tolist()
+                result['position_raw'] = position_base.tolist()  # Keep raw for debugging
                 result['position_camera_frame'] = position_camera.tolist()
                 result['coordinate_transformed'] = True
-                print(f"[D455] ✓ Coordinate transform applied")
-                print(f"  Camera frame: {position_camera}")
-                print(f"  Base frame: {position_base}")
+                result['calibration_applied'] = True
+
+                print(f"  Position (base frame, raw): {position_base}")
+                print(f"  Calibration offset: {self.calibration_offset}")
+                print(f"  Position (base frame, calibrated): {position_calibrated}")
+                print(f"  Transformation applied successfully")
+
+                # Save annotated debug images
+                if self.debug and result.get('bounding_box'):
+                    bbox = result['bounding_box']
+                    center_x = (bbox[0] + bbox[2]) // 2
+                    center_y = (bbox[1] + bbox[3]) // 2
+                    depth_value = processed_depth[center_y, center_x] if center_y < processed_depth.shape[0] and center_x < processed_depth.shape[1] else None
+
+                    self.image_processor.save_annotated_debug_images(
+                        f"debug_d455_{phase}",
+                        raw_image=rgb_image,
+                        depth_image=processed_depth,
+                        bbox=bbox,
+                        center_point=(center_x, center_y),
+                        depth_value=depth_value,
+                        position_camera=position_camera,
+                        position_base=position_calibrated  # Use calibrated position
+                    )
             else:
-                print(f"[D455] ⚠ Coordinate transform not available")
+                print(f"  WARNING: Coordinate transform not available!")
+                print(f"  Using camera frame coordinates (INCORRECT for robot control!)")
                 result['coordinate_transformed'] = False
 
         return result
@@ -497,24 +546,26 @@ class MultiViewVLMCoordinator:
         """Move arm to retracted pose to avoid occlusion."""
 
         # Retracted joint positions (arm pulled back and up)
+        # Updated to current ideal positions (2026-04-21)
+        # Read from actual robot pose and mirrored for symmetry
         retracted_positions = {
             'right': {
-                'right_s0': -0.5,
-                'right_s1': -0.5,
-                'right_e0': 0.0,
-                'right_e1': 1.5,
-                'right_w0': 0.0,
-                'right_w1': 1.0,
-                'right_w2': 0.0,
+                'right_s0': -0.456743,
+                'right_s1': -1.424685,
+                'right_e0': -0.282252,
+                'right_e1': 2.226190,
+                'right_w0': -0.052922,
+                'right_w1': 1.343000,
+                'right_w2': -0.008820,
             },
             'left': {
-                'left_s0': 0.5,
-                'left_s1': -0.5,
-                'left_e0': 0.0,
-                'left_e1': 1.5,
-                'left_w0': 0.0,
-                'left_w1': 1.0,
-                'left_w2': 0.0,
+                'left_s0': 0.456743,   # Mirror of right_s0
+                'left_s1': -1.424685,  # Same as right_s1
+                'left_e0': 0.282252,   # Mirror of right_e0
+                'left_e1': 2.226190,   # Same as right_e1
+                'left_w0': 0.052922,   # Mirror of right_w0
+                'left_w1': 1.343000,   # Same as right_w1
+                'left_w2': 0.008820,   # Mirror of right_w2
             }
         }
 
@@ -530,20 +581,61 @@ class MultiViewVLMCoordinator:
 
     def _enable_head_camera(self):
         """Enable Baxter head camera."""
-        self._head_camera_active = True
-        print("  ✓ Head camera enabled")
+        try:
+            from baxter_interface import CameraController
+            camera = CameraController('head_camera')
+            camera.open()
+            self._head_camera_active = True
+            print("  ✓ Head camera opened")
+        except Exception as e:
+            print(f"  ⚠ Failed to open head camera: {e}")
+            self._head_camera_active = False
 
     def _disable_head_camera(self):
         """Disable Baxter head camera."""
-        self._head_camera_active = False
-        print("  ✓ Head camera disabled")
+        try:
+            from baxter_interface import CameraController
+            camera = CameraController('head_camera')
+            camera.close()
+            self._head_camera_active = False
+            print("  ✓ Head camera closed")
+        except Exception as e:
+            print(f"  ⚠ Failed to close head camera: {e}")
 
     def _enable_wrist_camera(self, arm: str):
         """Enable Baxter wrist camera."""
-        self._wrist_camera_active = True
-        print(f"  ✓ {arm} wrist camera enabled")
+        try:
+            from baxter_interface import CameraController
+            camera_name = f"{arm}_hand_camera"
+            camera = CameraController(camera_name)
+            camera.open()
+            self._wrist_camera_active = True
+            print(f"  ✓ {arm} wrist camera opened")
+        except Exception as e:
+            print(f"  ⚠ Failed to open {arm} wrist camera: {e}")
+            self._wrist_camera_active = False
 
-    def _disable_wrist_camera(self):
+    def _disable_wrist_camera(self, arm: str = None):
         """Disable Baxter wrist camera."""
-        self._wrist_camera_active = False
-        print("  ✓ Wrist camera disabled")
+        if arm is None:
+            # Try to close both
+            for arm_name in ['left', 'right']:
+                try:
+                    from baxter_interface import CameraController
+                    camera_name = f"{arm_name}_hand_camera"
+                    camera = CameraController(camera_name)
+                    camera.close()
+                except:
+                    pass
+            self._wrist_camera_active = False
+            print("  ✓ Wrist cameras closed")
+        else:
+            try:
+                from baxter_interface import CameraController
+                camera_name = f"{arm}_hand_camera"
+                camera = CameraController(camera_name)
+                camera.close()
+                self._wrist_camera_active = False
+                print(f"  ✓ {arm} wrist camera closed")
+            except Exception as e:
+                print(f"  ⚠ Failed to close {arm} wrist camera: {e}")
