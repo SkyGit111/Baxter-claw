@@ -546,13 +546,14 @@ def main():
     parser.add_argument(
         "--enable-grasp-verification",
         action="store_true",
-        help="Enable post-grasp verification with wrist camera (experimental)"
+        default=None,
+        help="Enable post-grasp verification with wrist camera (overrides config file)"
     )
     parser.add_argument(
         "--grasp-verify-retries",
         type=int,
-        default=2,
-        help="Maximum retry attempts for failed grasp verification (default: 2)"
+        default=None,
+        help="Maximum retry attempts for failed grasp verification (overrides config file)"
     )
 
     args = parser.parse_args()
@@ -561,7 +562,7 @@ def main():
     global manager
     manager = ArmManager(
         config_path=args.config,
-        enable_grasp_verification=args.enable_grasp_verification,
+        enable_grasp_verification=args.enable_grasp_verification if args.enable_grasp_verification else None,
         grasp_verify_retries=args.grasp_verify_retries
     )
 

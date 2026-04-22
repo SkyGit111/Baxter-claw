@@ -526,3 +526,29 @@ Respond in JSON format:
             # Fallback to VLM-only estimate
             return await self.locate_object(image_bytes, object_name, workspace_bounds)
 
+    async def query_image(self, image_bytes: bytes, prompt: str) -> str:
+        """Generic method to query VLM with an image and custom prompt.
+
+        Args:
+            image_bytes: JPEG image data
+            prompt: Custom prompt for the VLM
+
+        Returns:
+            VLM response text
+        """
+        try:
+            # Encode image
+            image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+            # Call VLM
+            response = await self._call_vlm(image_b64, prompt)
+
+            # Extract text from response
+            response_text = self._extract_text(response)
+
+            return response_text
+
+        except Exception as e:
+            print(f"Failed to query VLM: {e}")
+            raise
+

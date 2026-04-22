@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+import time
 from typing import Callable, Optional, Dict, Any
 import numpy as np
 
@@ -85,8 +86,8 @@ class GraspVerifier:
             camera_name = f"{arm}_hand"
             print(f"[GraspVerifier] Capturing from {camera_name} camera...")
 
-            rgb_image = self.driver.capture_camera_image(camera_name)
-            if rgb_image is None:
+            image_bytes = self.driver.capture_image(camera_name)
+            if not image_bytes:
                 print(f"[GraspVerifier] Warning: Failed to capture from {camera_name}")
                 # Fail-safe: assume success if camera fails
                 return {
@@ -97,20 +98,19 @@ class GraspVerifier:
 
             # Save debug image if enabled
             if self.debug:
-                import cv2
-                import time
                 import os
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 debug_filename = f"grasp_verify_{arm}_{timestamp}.jpg"
                 debug_path = os.path.join(self.debug_dir, debug_filename)
-                cv2.imwrite(debug_path, cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+                with open(debug_path, 'wb') as f:
+                    f.write(image_bytes)
                 print(f"[GraspVerifier] Debug image saved: {debug_path}")
 
             # Step 2: Ask VLM to verify grasp
             prompt = self._build_verification_prompt(object_name)
             print(f"[GraspVerifier] Asking VLM to verify...")
 
-            vlm_response = await self.vlm.query_image(rgb_image, prompt)
+            vlm_response = await self.vlm.query_image(image_bytes, prompt)
 
             # Step 3: Parse VLM response
             result = self._parse_vlm_response(vlm_response)
