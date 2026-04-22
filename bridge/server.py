@@ -543,15 +543,32 @@ def main():
         default=8420,
         help="Port to bind to (default: 8420)"
     )
+    parser.add_argument(
+        "--enable-grasp-verification",
+        action="store_true",
+        help="Enable post-grasp verification with wrist camera (experimental)"
+    )
+    parser.add_argument(
+        "--grasp-verify-retries",
+        type=int,
+        default=2,
+        help="Maximum retry attempts for failed grasp verification (default: 2)"
+    )
 
     args = parser.parse_args()
 
     # Initialize global manager with config
     global manager
-    manager = ArmManager(config_path=args.config)
+    manager = ArmManager(
+        config_path=args.config,
+        enable_grasp_verification=args.enable_grasp_verification,
+        grasp_verify_retries=args.grasp_verify_retries
+    )
 
     # Start server
     print(f"Starting server on {args.host}:{args.port}")
+    if args.enable_grasp_verification:
+        print(f"[Experimental] Grasp verification enabled (max retries: {args.grasp_verify_retries})")
     uvicorn.run(app, host=args.host, port=args.port)
 
 

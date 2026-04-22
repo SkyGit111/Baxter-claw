@@ -9,6 +9,7 @@ from .drivers.mock_driver import MockDriver
 from .primitives import BaxterPrimitives
 from .safety import SafetyValidator
 from .vlm_client import VLMClient
+from .grasp_verifier import GraspVerifier
 
 
 class ArmManager:
@@ -17,11 +18,18 @@ class ArmManager:
     Coordinates between driver, primitives, and safety validator.
     """
 
-    def __init__(self, config_path: str = None):
+    def __init__(
+        self,
+        config_path: str = None,
+        enable_grasp_verification: bool = False,
+        grasp_verify_retries: int = 2
+    ):
         """Initialize arm manager.
 
         Args:
             config_path: Path to configuration YAML file
+            enable_grasp_verification: Enable post-grasp verification (experimental)
+            grasp_verify_retries: Maximum retry attempts for failed grasps
         """
         self.config = self._load_config(config_path)
 
@@ -32,7 +40,27 @@ class ArmManager:
         # Initialize VLM client if configured
         self.vlm_client = self._create_vlm_client()
 
-        self.primitives = BaxterPrimitives(self.driver, self.safety, self.vlm_client)
+        # Initialize grasp verifier (experimental feature)
+        self.grasp_verifier = None
+        if enable_grasp_verification:
+            if self.vlm_client:
+                self.grasp_verifier = GraspVerifier(
+                    self.driver,
+                    self.vlm_client,
+                    enabled=True,
+                    max_retries=grasp_verify_retries,
+                    debug=True  # Save debug images
+                )
+                print(f"[ArmManager] Grasp verification enabled (max_retries={grasp_verify_retries})")
+            else:
+                print("[ArmManager] Warning: Grasp verification requested but VLM not configured")
+
+        self.primitives = BaxterPrimitives(
+            self.driver,
+            self.safety,
+            self.vlm_client,
+            grasp_verifier=self.grasp_verifier  # Pass verifier to primitives
+        )
 
         self._connected = False
         self._enabled = False

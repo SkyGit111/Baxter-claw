@@ -17,17 +17,25 @@ class BaxterPrimitives:
     actions that can be easily invoked by LLM agents.
     """
 
-    def __init__(self, driver: ArmDriver, safety: SafetyValidator, vlm_client: Optional[VLMClient] = None):
+    def __init__(
+        self,
+        driver: ArmDriver,
+        safety: SafetyValidator,
+        vlm_client: Optional[VLMClient] = None,
+        grasp_verifier: Optional['GraspVerifier'] = None
+    ):
         """Initialize primitives.
 
         Args:
             driver: Robot driver instance
             safety: Safety validator instance
             vlm_client: Optional VLM client for vision features
+            grasp_verifier: Optional grasp verifier for post-pick validation
         """
         self.driver = driver
         self.safety = safety
         self.vlm_client = vlm_client
+        self.grasp_verifier = grasp_verifier
 
         # Initialize multi-view VLM coordinator if VLM is available
         self.multi_view_vlm = None
@@ -717,6 +725,42 @@ class BaxterPrimitives:
             result['vlm_response'] = location_result
             result['object_name'] = object_name
             result['confidence'] = confidence
+
+            # EXPERIMENTAL: Post-grasp verification with retry
+            if self.grasp_verifier and result.get('success'):
+                print(f"[Primitive] Running post-grasp verification...")
+
+                try:
+                    # Verify grasp and retry if needed
+                    verification_result = await self.grasp_verifier.verify_and_retry_if_needed(
+                        arm=arm,
+                        object_name=object_name,
+                        pick_function=lambda: self.pick(arm, position, approach_height, speed),
+                        pick_params={}
+                    )
+
+                    # Update result with verification info
+                    result['grasp_verified'] = verification_result['success']
+                    result['verification_attempts'] = verification_result['attempts']
+                    result['verification_details'] = verification_result.get('verification_result')
+
+                    if not verification_result['success']:
+                        # Verification failed after retries
+                        result['success'] = False
+                        result['message'] = (
+                            f"Pick executed but grasp verification failed after "
+                            f"{verification_result['attempts']} attempts. "
+                            f"Reason: {verification_result.get('verification_result', {}).get('reasoning', 'Unknown')}"
+                        )
+                        print(f"[Primitive] ✗ Grasp verification failed")
+                    else:
+                        print(f"[Primitive] ✓ Grasp verified successfully")
+
+                except Exception as e:
+                    # Verification error - don't fail the pick, just log
+                    print(f"[Primitive] Warning: Grasp verification error: {e}")
+                    result['grasp_verified'] = None
+                    result['verification_error'] = str(e)
 
             return result
 
