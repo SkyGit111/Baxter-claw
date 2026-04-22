@@ -353,19 +353,21 @@ class BaxterPrimitives:
             if relative_position == "next_to":
                 # 15cm to the right side
                 place_position[1] += 0.15
-                # Place at table level (not target object height)
-                place_position[2] = -0.13
+                # Use target object height with small offset (place at same level)
+                place_position[2] -= 0.05  # 5cm below target object top
             elif relative_position == "on_top":
-                # On top (add object height, assume ~5cm)
-                place_position[2] -= 0.05
+                # On top (add small offset above object)
+                place_position[2] += 0.03  # 5cm below detected position (on top of object)
             elif relative_position == "behind":
                 # 15cm behind (negative X)
                 place_position[0] -= 0.15
-                place_position[2] = -0.13
+                # Use target object height with small offset
+                place_position[2] -= 0.05
             elif relative_position == "in_front":
                 # 15cm in front (positive X)
                 place_position[0] += 0.15
-                place_position[2] = -0.13
+                # Use target object height with small offset
+                place_position[2] -= 0.05
             else:
                 return {
                     "success": False,

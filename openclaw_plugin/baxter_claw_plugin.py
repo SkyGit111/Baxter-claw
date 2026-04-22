@@ -2,13 +2,19 @@
 Baxter-Claw OpenClaw Plugin
 
 This plugin enables natural language control of Baxter robot through OpenClaw.
-Uses LLM (Qwen) for intelligent intent recognition instead of regex patterns.
+Uses skills.md to define available skills and LLM for skill selection.
+
+Architecture:
+1. User gives natural language command
+2. LLM selects appropriate skill from skills.md
+3. LLM extracts parameters for the skill
+4. Plugin executes the skill (may involve multiple primitives)
+5. Return result to user
 
 Example interactions:
-- "帮我拿一下红色的杯子" -> pick_by_name("红色杯子")
-- "把它放到桌子左边" -> place([x, y, z])
-- "打开夹爪" -> gripper("open")
-- "看看桌上有什么" -> describe_scene()
+- "抓住蓝色小方块" -> pick_object(object_name="蓝色小方块")
+- "把它放到黄色方块上" -> place_object_relative(target_object_name="黄色方块", relative_position="on_top")
+- "把蓝色方块放到魔方上" -> pick_and_place_relative(source="蓝色方块", target="魔方", position="on_top")
 """
 
 import json
@@ -18,31 +24,33 @@ import httpx
 
 
 class BaxterClawPlugin:
-    """OpenClaw plugin for Baxter-Claw control."""
+    """OpenClaw plugin for Baxter-Claw control using skills.md."""
 
     def __init__(
         self,
         bridge_url: str = "http://localhost:8420",
         llm_provider: str = "qwen",
         llm_api_key: Optional[str] = None,
-        use_d455: bool = True  # Use D455 depth camera by default
+        use_d455: bool = True
     ):
         """Initialize plugin.
 
         Args:
             bridge_url: URL of Baxter-Claw Bridge Server
-            llm_provider: LLM provider for intent recognition ('qwen', 'openai', 'claude')
+            llm_provider: LLM provider for skill selection ('qwen', 'openai', 'claude')
             llm_api_key: API key for LLM (or use environment variable)
             use_d455: Use D455 depth camera for vision tasks (recommended)
-                     If False, will use right_hand camera (limited view)
         """
         self.bridge_url = bridge_url
-        self.client = httpx.Client(timeout=30.0)
+        self.client = httpx.Client(timeout=120.0)  # 增加到 120 秒，支持复杂任务
         self.use_d455 = use_d455
 
-        # LLM configuration for intent recognition
+        # LLM configuration for skill selection
         self.llm_provider = llm_provider.lower()
         self.llm_api_key = llm_api_key or self._get_llm_api_key()
+
+        # Load skills.md
+        self.skills = self._load_skills()
 
         # LLM endpoints
         self.llm_endpoints = {
@@ -67,6 +75,484 @@ class BaxterClawPlugin:
         elif self.llm_provider == 'claude':
             return os.getenv('ANTHROPIC_API_KEY', '')
         return ''
+
+    def _load_skills(self) -> str:
+        """Load skills.md content."""
+        skills_path = os.path.join(os.path.dirname(__file__), 'skills.md')
+        try:
+            with open(skills_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            print(f"Warning: skills.md not found at {skills_path}")
+            return ""
+
+    # ============================================================
+    # NEW: Skills-based architecture (using skills.md)
+    # ============================================================
+
+    def select_skill(self, user_message: str) -> Dict[str, Any]:
+        """Select appropriate skill from skills.md based on user message.
+
+        This is the NEW architecture that uses skills.md for better control.
+
+        Args:
+            user_message: Natural language command from user
+
+        Returns:
+            Dict with 'skill', 'params', and 'confidence'
+        """
+        try:
+            # Build prompt for skill selection
+            prompt = self._build_skill_selection_prompt(user_message)
+
+            # Call LLM
+            response = self._call_llm(prompt)
+
+            # Parse LLM response
+            skill_selection = self._parse_skill_selection(response)
+
+            return skill_selection
+
+        except Exception as e:
+            print(f"Skill selection failed: {e}")
+            return {
+                'skill': 'unknown',
+                'params': {},
+                'confidence': 0.0,
+                'error': str(e)
+            }
+
+    def _build_skill_selection_prompt(self, user_message: str) -> str:
+        """Build prompt for LLM to select skill from skills.md."""
+        prompt = f"""You are a robot control assistant. The user has given a command, and you must select the appropriate skill from the available skills and extract the required parameters.
+
+User command: "{user_message}"
+
+Available skills:
+{self.skills}
+
+Your task:
+1. Read the user command carefully
+2. Select the MOST APPROPRIATE skill from the list above
+3. Extract ALL required parameters for that skill
+4. Pay special attention to object names - extract them EXACTLY as mentioned by the user
+
+CRITICAL RULES for parameter extraction:
+- For pick_and_place_relative: Extract BOTH source_object_name (object to pick) AND target_object_name (reference object)
+- Example: "把蓝色方块放到黄色方块上"
+  - source_object_name = "蓝色方块" (the one to PICK)
+  - target_object_name = "黄色方块" (the reference for PLACEMENT)
+- NEVER confuse source and target objects!
+
+- For relative_position, map user's words:
+  - "上面", "上", "on top", "on" → "on_top"
+  - "旁边", "next to", "beside" → "next_to"
+  - "后面", "behind" → "behind"
+  - "前面", "in front", "front" → "in_front"
+
+- For direction, map user's words:
+  - "左边", "左", "left" → "left"
+  - "右边", "右", "right" → "right"
+  - "前面", "前", "front" → "front"
+  - "后面", "后", "back" → "back"
+
+- For arm: Default to "auto" unless user explicitly specifies
+  - "用左手", "left arm" → "left"
+  - "用右手", "right arm" → "right"
+  - Otherwise → "auto"
+
+Return your answer in JSON format:
+{{
+    "skill": "skill_name",
+    "params": {{
+        "param1": "value1",
+        "param2": "value2"
+    }},
+    "confidence": 0.95,
+    "reasoning": "Brief explanation of why you chose this skill"
+}}
+
+IMPORTANT: Return ONLY the JSON, no other text."""
+        return prompt
+
+    def _parse_skill_selection(self, response: Dict) -> Dict[str, Any]:
+        """Parse LLM response for skill selection."""
+        try:
+            # Extract content from LLM response
+            if self.llm_provider == 'qwen' or self.llm_provider == 'openai':
+                content = response['choices'][0]['message']['content']
+            elif self.llm_provider == 'claude':
+                content = response['content'][0]['text']
+            else:
+                raise ValueError(f"Unknown LLM provider: {self.llm_provider}")
+
+            # Parse JSON
+            content = content.strip()
+            if content.startswith('```json'):
+                content = content[7:]
+            if content.startswith('```'):
+                content = content[3:]
+            if content.endswith('```'):
+                content = content[:-3]
+            content = content.strip()
+
+            skill_dict = json.loads(content)
+
+            # Validate required fields
+            if 'skill' not in skill_dict:
+                raise ValueError("Missing 'skill' field in LLM response")
+            if 'params' not in skill_dict:
+                skill_dict['params'] = {}
+            if 'confidence' not in skill_dict:
+                skill_dict['confidence'] = 0.5
+
+            return skill_dict
+
+        except Exception as e:
+            print(f"Failed to parse skill selection: {e}")
+            print(f"Response: {response}")
+            return {
+                'skill': 'unknown',
+                'params': {},
+                'confidence': 0.0,
+                'error': str(e)
+            }
+
+    def execute_skill(self, skill_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a skill by name.
+
+        Args:
+            skill_name: Name of the skill to execute
+            params: Parameters for the skill
+
+        Returns:
+            Dict with 'success', 'message', and optional 'data'
+        """
+        print(f"[Skill] Executing: {skill_name}")
+        print(f"[Skill] Parameters: {params}")
+
+        try:
+            # Execute skill based on name
+            if skill_name == 'pick_object':
+                return self._execute_pick_object(params)
+            elif skill_name == 'place_object_direction':
+                return self._execute_place_object_direction(params)
+            elif skill_name == 'place_object_relative':
+                return self._execute_place_object_relative(params)
+            elif skill_name == 'pick_and_place_direction':
+                return self._execute_pick_and_place_direction(params)
+            elif skill_name == 'pick_and_place_relative':
+                return self._execute_pick_and_place_relative(params)
+            elif skill_name == 'locate_object':
+                return self._execute_locate_object(params)
+            elif skill_name == 'describe_scene':
+                return self._execute_describe_scene(params)
+            elif skill_name == 'go_home':
+                return self._execute_go_home(params)
+            elif skill_name == 'open_gripper':
+                return self._execute_open_gripper(params)
+            elif skill_name == 'close_gripper':
+                return self._execute_close_gripper(params)
+            else:
+                return {
+                    'success': False,
+                    'message': f'Unknown skill: {skill_name}'
+                }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Skill execution failed: {str(e)}'
+            }
+
+    # Skill execution methods
+    def _execute_pick_object(self, params: Dict) -> Dict:
+        """Execute pick_object skill."""
+        object_name = params.get('object_name', '')
+        arm = params.get('arm', 'auto')
+
+        if not object_name:
+            return {'success': False, 'message': 'Missing object_name parameter'}
+
+        # Handle arm='auto': locate object first to determine which arm to use
+        if arm == 'auto':
+            try:
+                locate_response = self.client.post(
+                    f"{self.bridge_url}/vision/locate_object",
+                    json={
+                        'object_name': object_name,
+                        'use_d455': self.use_d455
+                    }
+                )
+                locate_response.raise_for_status()
+                locate_result = locate_response.json()
+
+                if locate_result.get('success') and locate_result.get('position'):
+                    position = locate_result['position']
+                    arm = self._choose_arm_by_position(position)
+                    print(f"[Auto-select] Object at {position}, choosing {arm} arm")
+                else:
+                    arm = 'right'
+                    print(f"[Auto-select] Localization failed, defaulting to right arm")
+            except Exception as e:
+                print(f"[Auto-select] Error during localization: {e}, defaulting to right arm")
+                arm = 'right'
+
+        response = self.client.post(
+            f"{self.bridge_url}/vision/pick_by_name",
+            json={
+                'arm': arm,
+                'object_name': object_name,
+                'use_d455': self.use_d455
+            }
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            return {
+                'success': True,
+                'message': f"成功抓取 {object_name}",
+                'data': result,
+                'arm_used': arm
+            }
+        else:
+            return {
+                'success': False,
+                'message': f"抓取失败: {result.get('message', '未知错误')}"
+            }
+
+    def _execute_place_object_direction(self, params: Dict) -> Dict:
+        """Execute place_object_direction skill."""
+        direction = params.get('direction', 'center')
+        arm = params.get('arm', 'auto')
+
+        # Handle arm='auto': default to right
+        if arm == 'auto':
+            arm = 'right'
+
+        # Convert direction to position
+        position = self._direction_to_position(direction)
+
+        response = self.client.post(
+            f"{self.bridge_url}/primitives/place",
+            json={'arm': arm, 'position': position}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            return {
+                'success': True,
+                'message': f"成功放置到{direction}边",
+                'data': result
+            }
+        else:
+            return {
+                'success': False,
+                'message': f"放置失败: {result.get('message', '未知错误')}"
+            }
+
+    def _execute_place_object_relative(self, params: Dict) -> Dict:
+        """Execute place_object_relative skill."""
+        target_object_name = params.get('target_object_name', '')
+        relative_position = params.get('relative_position', 'next_to')
+        arm = params.get('arm', 'auto')
+
+        if not target_object_name:
+            return {'success': False, 'message': 'Missing target_object_name parameter'}
+
+        # Handle arm='auto': default to right (or use arm from previous pick)
+        if arm == 'auto':
+            arm = 'right'
+            print(f"[Auto-select] Defaulting to {arm} arm for place")
+
+        response = self.client.post(
+            f"{self.bridge_url}/primitives/place_by_name",
+            json={
+                'arm': arm,
+                'target_object_name': target_object_name,
+                'relative_position': relative_position
+            }
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            return {
+                'success': True,
+                'message': f"成功放置到 {target_object_name} {relative_position}",
+                'data': result
+            }
+        else:
+            return {
+                'success': False,
+                'message': f"放置失败: {result.get('message', '未知错误')}"
+            }
+
+    def _execute_pick_and_place_direction(self, params: Dict) -> Dict:
+        """Execute pick_and_place_direction skill (combined)."""
+        object_name = params.get('object_name', '')
+        direction = params.get('direction', 'center')
+        arm = params.get('arm', 'auto')
+
+        if not object_name:
+            return {'success': False, 'message': 'Missing object_name parameter'}
+
+        # Step 1: Pick
+        pick_result = self._execute_pick_object({'object_name': object_name, 'arm': arm})
+        if not pick_result['success']:
+            return pick_result
+
+        # Get the arm that was actually used for pick
+        arm_used = pick_result.get('arm_used', arm if arm != 'auto' else 'right')
+
+        # Step 2: Place
+        place_result = self._execute_place_object_direction({'direction': direction, 'arm': arm_used})
+
+        if place_result['success']:
+            return {
+                'success': True,
+                'message': f"成功将 {object_name} 放置到{direction}边"
+            }
+        else:
+            return place_result
+
+    def _execute_pick_and_place_relative(self, params: Dict) -> Dict:
+        """Execute pick_and_place_relative skill (combined)."""
+        source_object_name = params.get('source_object_name', '')
+        target_object_name = params.get('target_object_name', '')
+        relative_position = params.get('relative_position', 'next_to')
+        arm = params.get('arm', 'auto')
+
+        if not source_object_name:
+            return {'success': False, 'message': 'Missing source_object_name parameter'}
+        if not target_object_name:
+            return {'success': False, 'message': 'Missing target_object_name parameter'}
+
+        print(f"[Skill] Pick: {source_object_name}")
+        print(f"[Skill] Place: {relative_position} {target_object_name}")
+
+        # Step 1: Pick source object
+        pick_result = self._execute_pick_object({'object_name': source_object_name, 'arm': arm})
+        if not pick_result['success']:
+            return pick_result
+
+        # Get the arm that was actually used for pick
+        arm_used = pick_result.get('arm_used', arm if arm != 'auto' else 'right')
+        print(f"[Skill] Using {arm_used} arm for place")
+
+        # Step 2: Place relative to target object (use same arm)
+        place_result = self._execute_place_object_relative({
+            'target_object_name': target_object_name,
+            'relative_position': relative_position,
+            'arm': arm_used  # Use the arm that picked the object
+        })
+
+        if place_result['success']:
+            return {
+                'success': True,
+                'message': f"成功将 {source_object_name} 放置到 {target_object_name} {relative_position}"
+            }
+        else:
+            return place_result
+
+    def _execute_locate_object(self, params: Dict) -> Dict:
+        """Execute locate_object skill."""
+        object_name = params.get('object_name', '')
+
+        if not object_name:
+            return {'success': False, 'message': 'Missing object_name parameter'}
+
+        response = self.client.post(
+            f"{self.bridge_url}/vision/locate_object",
+            json={'object_name': object_name, 'use_d455': self.use_d455}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success') and result.get('found'):
+            position = result['position']
+            return {
+                'success': True,
+                'message': f"{object_name} 位于: [{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}]",
+                'data': result
+            }
+        else:
+            return {
+                'success': False,
+                'message': f"未找到 {object_name}"
+            }
+
+    def _execute_describe_scene(self, params: Dict) -> Dict:
+        """Execute describe_scene skill."""
+        response = self.client.get(f"{self.bridge_url}/vision/describe")
+        response.raise_for_status()
+        result = response.json()
+
+        return {
+            'success': True,
+            'message': result.get('description', '场景描述获取失败'),
+            'data': result
+        }
+
+    def _execute_go_home(self, params: Dict) -> Dict:
+        """Execute go_home skill."""
+        arm = params.get('arm', 'both')
+
+        response = self.client.post(
+            f"{self.bridge_url}/primitives/home",
+            json={'arm': arm}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('success'):
+            return {
+                'success': True,
+                'message': f"{arm} 臂已回到原位"
+            }
+        else:
+            return {
+                'success': False,
+                'message': f"回原位失败: {result.get('message', '未知错误')}"
+            }
+
+    def _execute_open_gripper(self, params: Dict) -> Dict:
+        """Execute open_gripper skill."""
+        arm = params.get('arm', 'right')
+
+        response = self.client.post(
+            f"{self.bridge_url}/primitives/gripper",
+            json={'arm': arm, 'command': 'open'}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        return {
+            'success': result.get('success', False),
+            'message': f"{arm} 臂夹爪已打开" if result.get('success') else "夹爪打开失败"
+        }
+
+    def _execute_close_gripper(self, params: Dict) -> Dict:
+        """Execute close_gripper skill."""
+        arm = params.get('arm', 'right')
+
+        response = self.client.post(
+            f"{self.bridge_url}/primitives/gripper",
+            json={'arm': arm, 'command': 'close'}
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        return {
+            'success': result.get('success', False),
+            'message': f"{arm} 臂夹爪已关闭" if result.get('success') else "夹爪关闭失败"
+        }
+
+    # ============================================================
+    # OLD: Intent-based architecture (kept for reference)
+    # ============================================================
 
     def parse_intent(self, user_message: str) -> Dict[str, Any]:
         """Parse user message to extract intent and parameters using LLM.
@@ -868,6 +1354,57 @@ Now parse the user command and respond with JSON only:"""
         offset = offsets.get(direction, [0.0, 0.0, 0.0])
         return [base[i] + offset[i] for i in range(3)]
 
+    # ============================================================
+    # NEW: Skills-based message handler
+    # ============================================================
+
+    def handle_message_with_skills(self, user_message: str) -> str:
+        """Handle user message using skills.md architecture.
+
+        This is the NEW, SIMPLER approach:
+        1. LLM selects skill from skills.md
+        2. LLM extracts parameters
+        3. Execute skill (may be single or combined primitives)
+        4. Return result
+
+        Args:
+            user_message: Natural language command from user
+
+        Returns:
+            Response message to user
+        """
+        print(f"\n{'='*60}")
+        print(f"[User] {user_message}")
+        print(f"{'='*60}")
+
+        # Step 1: Select skill
+        skill_selection = self.select_skill(user_message)
+
+        if skill_selection.get('skill') == 'unknown':
+            return f"抱歉，我无法理解您的指令: {skill_selection.get('error', '未知错误')}"
+
+        skill_name = skill_selection['skill']
+        params = skill_selection.get('params', {})
+        confidence = skill_selection.get('confidence', 0.0)
+
+        print(f"[Skill Selected] {skill_name} (confidence: {confidence:.2f})")
+        print(f"[Parameters] {params}")
+
+        # Step 2: Execute skill
+        result = self.execute_skill(skill_name, params)
+
+        # Step 3: Return result
+        if result.get('success'):
+            print(f"[Result] ✓ {result['message']}")
+            return result['message']
+        else:
+            print(f"[Result] ✗ {result['message']}")
+            return f"执行失败: {result['message']}"
+
+    # ============================================================
+    # OLD: Intent-based message handler (kept for reference)
+    # ============================================================
+
     def handle_message(self, user_message: str) -> str:
         """Handle user message with intelligent task routing.
 
@@ -1200,28 +1737,36 @@ if __name__ == "__main__":
 
     plugin = BaxterClawPlugin(llm_api_key=api_key)
 
-    # Test cases
+    # Test cases for NEW skills-based architecture
     test_messages = [
-        "帮我拿一下红色的杯子",
-        "pick the white box",
-        "grab a blue bottle",
+        "抓住蓝色小方块",
+        "把蓝色方块放到黄色方块上",
+        "把红色杯子放到魔方旁边",
         "把它放到左边",
-        "place it on the right",
-        "打开夹爪",
-        "open gripper",
+        "魔方在哪里",
         "看看桌上有什么",
-        "what do you see",
         "回到原位",
-        "home",
-        "查看状态",
+        "打开左手夹爪",
     ]
 
-    print("Baxter-Claw OpenClaw Plugin 测试 (LLM-based Intent Recognition)\n")
+    print("Baxter-Claw OpenClaw Plugin 测试 (Skills-based Architecture)\n")
     print("="*60)
     print(f"LLM Provider: {plugin.llm_provider}")
     print(f"LLM Model: {plugin.llm_models[plugin.llm_provider]}")
     print("="*60)
 
+    for msg in test_messages:
+        print(f"\n{'='*60}")
+        print(f"测试: {msg}")
+        print(f"{'='*60}")
+
+        # Use NEW skills-based handler
+        response = plugin.handle_message_with_skills(msg)
+        print(f"响应: {response}")
+        print()
+
+    # OLD test code (commented out, kept for reference)
+    """
     for msg in test_messages:
         print(f"\n用户: {msg}")
         intent = plugin.parse_intent(msg)
@@ -1232,3 +1777,4 @@ if __name__ == "__main__":
         # Uncomment to test actual execution
         # response = plugin.handle_message(msg)
         # print(f"回复: {response}")
+    """

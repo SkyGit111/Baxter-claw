@@ -620,8 +620,8 @@ def chat():
         if not user_message:
             return jsonify({'response': '请输入消息'}), 400
 
-        # 使用插件处理消息
-        response = plugin.handle_message(user_message)
+        # 使用新的 skills-based 架构处理消息
+        response = plugin.handle_message_with_skills(user_message)
 
         return jsonify({'response': response})
 

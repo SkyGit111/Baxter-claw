@@ -75,6 +75,20 @@ class BaxterDriver(ArmDriver):
             self._grippers['right'] = baxter_interface.Gripper('right', CHECK_VERSION)
             self._grippers['left'] = baxter_interface.Gripper('left', CHECK_VERSION)
 
+            # Calibrate grippers
+            print("Calibrating grippers...")
+            try:
+                self._grippers['right'].calibrate()
+                print("  Right gripper calibrated")
+            except Exception as e:
+                print(f"  Warning: Right gripper calibration failed: {e}")
+
+            try:
+                self._grippers['left'].calibrate()
+                print("  Left gripper calibrated")
+            except Exception as e:
+                print(f"  Warning: Left gripper calibration failed: {e}")
+
             # Initialize enhanced IK solver
             try:
                 from ..ik_solver import EnhancedIKSolver
