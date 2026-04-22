@@ -103,7 +103,7 @@ class ErrorResponse(BaseModel):
 
 class PickByNameRequest(BaseModel):
     """Request to pick object by name using vision."""
-    arm: Literal["left", "right"] = Field(default="right", description="Which arm to use")
+    arm: Literal["left", "right", "auto"] = Field(default="auto", description="Which arm to use ('auto' for automatic selection)")
     object_name: str = Field(..., description="Name of object to pick (e.g., 'red cup')")
     use_d455: bool = Field(default=True, description="Use D455 depth camera (recommended)")
     approach_height: Optional[float] = Field(default=0.1, description="Height offset for pre-grasp pose")

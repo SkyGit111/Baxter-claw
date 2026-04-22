@@ -51,6 +51,13 @@ class GraspVerifier:
         self.max_retries = max_retries
         self.debug = debug
 
+        # Create debug directory if debug mode is enabled
+        if self.debug:
+            import os
+            self.debug_dir = "debug/grasp_verification"
+            os.makedirs(self.debug_dir, exist_ok=True)
+            print(f"[GraspVerifier] Debug images will be saved to: {self.debug_dir}/")
+
         print(f"[GraspVerifier] Initialized (enabled={enabled}, max_retries={max_retries})")
 
     async def verify_grasp(self, arm: str, object_name: str) -> Dict[str, Any]:
@@ -92,8 +99,10 @@ class GraspVerifier:
             if self.debug:
                 import cv2
                 import time
+                import os
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                debug_path = f"grasp_verify_{arm}_{timestamp}.jpg"
+                debug_filename = f"grasp_verify_{arm}_{timestamp}.jpg"
+                debug_path = os.path.join(self.debug_dir, debug_filename)
                 cv2.imwrite(debug_path, cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
                 print(f"[GraspVerifier] Debug image saved: {debug_path}")
 

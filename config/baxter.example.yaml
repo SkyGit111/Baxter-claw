@@ -37,6 +37,23 @@ primitives:
   # Motion speed for primitives (0-1)
   default_speed: 0.3
 
+# Experimental features
+experimental:
+  # Collision detection (monitors arm position stagnation during motion)
+  collision_detection:
+    enabled: false  # Enable collision detection
+    position_threshold: 0.005  # Position change threshold (meters)
+    stagnation_duration: 2.0   # Time before collision detected (seconds)
+    sample_interval: 0.2       # Sampling frequency (seconds)
+    min_samples: 3             # Minimum consecutive stagnant samples
+    debug: false               # Enable debug logging
+
+  # Grasp verification (verifies successful grasp with wrist camera)
+  grasp_verification:
+    enabled: false  # Enable post-grasp verification
+    max_retries: 2  # Maximum retry attempts for failed grasps
+    debug: true     # Save debug images
+
 # Server configuration
 server:
   host: "0.0.0.0"

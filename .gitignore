@@ -88,3 +88,6 @@ install/
 
 # Docker
 .dockerignore
+
+# Grasp verification debug images
+debug/grasp_verification/

@@ -10,6 +10,7 @@ from .primitives import BaxterPrimitives
 from .safety import SafetyValidator
 from .vlm_client import VLMClient
 from .grasp_verifier import GraspVerifier
+from .collision_detector import CollisionDetector
 
 
 class ArmManager:
@@ -21,15 +22,17 @@ class ArmManager:
     def __init__(
         self,
         config_path: str = None,
-        enable_grasp_verification: bool = False,
-        grasp_verify_retries: int = 2
+        enable_grasp_verification: bool = None,
+        grasp_verify_retries: int = None
     ):
         """Initialize arm manager.
 
         Args:
             config_path: Path to configuration YAML file
             enable_grasp_verification: Enable post-grasp verification (experimental)
+                                      If None, reads from config file
             grasp_verify_retries: Maximum retry attempts for failed grasps
+                                 If None, reads from config file
         """
         self.config = self._load_config(config_path)
 
@@ -41,25 +44,20 @@ class ArmManager:
         self.vlm_client = self._create_vlm_client()
 
         # Initialize grasp verifier (experimental feature)
-        self.grasp_verifier = None
-        if enable_grasp_verification:
-            if self.vlm_client:
-                self.grasp_verifier = GraspVerifier(
-                    self.driver,
-                    self.vlm_client,
-                    enabled=True,
-                    max_retries=grasp_verify_retries,
-                    debug=True  # Save debug images
-                )
-                print(f"[ArmManager] Grasp verification enabled (max_retries={grasp_verify_retries})")
-            else:
-                print("[ArmManager] Warning: Grasp verification requested but VLM not configured")
+        self.grasp_verifier = self._create_grasp_verifier(
+            enable_grasp_verification,
+            grasp_verify_retries
+        )
+
+        # Initialize collision detector (experimental feature)
+        self.collision_detector = self._create_collision_detector()
 
         self.primitives = BaxterPrimitives(
             self.driver,
             self.safety,
             self.vlm_client,
-            grasp_verifier=self.grasp_verifier  # Pass verifier to primitives
+            grasp_verifier=self.grasp_verifier,  # Pass verifier to primitives
+            collision_detector=self.collision_detector  # Pass collision detector to primitives
         )
 
         self._connected = False
@@ -108,6 +106,70 @@ class ArmManager:
 
         print(f"Creating VLM client (provider: {provider})")
         return VLMClient(provider=provider, api_key=api_key)
+
+    def _create_grasp_verifier(
+        self,
+        enable_override: Optional[bool],
+        retries_override: Optional[int]
+    ) -> Optional[GraspVerifier]:
+        """Create grasp verifier based on configuration.
+
+        Args:
+            enable_override: Override config file setting (from command line)
+            retries_override: Override config file setting (from command line)
+
+        Returns:
+            GraspVerifier instance if enabled, None otherwise
+        """
+        # Support both top-level and nested config structure for backward compatibility
+        grasp_config = self.config.get('experimental', {}).get('grasp_verification', {})
+        if not grasp_config:
+            grasp_config = self.config.get('grasp_verification', {})
+
+        # Command line arguments override config file
+        enabled = enable_override if enable_override is not None else grasp_config.get('enabled', False)
+        max_retries = retries_override if retries_override is not None else grasp_config.get('max_retries', 2)
+        debug = grasp_config.get('debug', True)
+
+        if not enabled:
+            print("[ArmManager] Grasp verification disabled")
+            return None
+
+        if not self.vlm_client:
+            print("[ArmManager] Warning: Grasp verification requested but VLM not configured")
+            return None
+
+        print(f"[ArmManager] Grasp verification enabled (max_retries={max_retries})")
+        return GraspVerifier(
+            self.driver,
+            self.vlm_client,
+            enabled=True,
+            max_retries=max_retries,
+            debug=debug
+        )
+
+    def _create_collision_detector(self) -> CollisionDetector:
+        """Create collision detector based on configuration."""
+        # Support both top-level and nested config structure for backward compatibility
+        collision_config = self.config.get('experimental', {}).get('collision_detection', {})
+        if not collision_config:
+            collision_config = self.config.get('collision_detection', {})
+
+        enabled = collision_config.get('enabled', False)
+        position_threshold = collision_config.get('position_threshold', 0.005)
+        stagnation_duration = collision_config.get('stagnation_duration', 2.0)
+        sample_interval = collision_config.get('sample_interval', 0.2)
+        min_samples = collision_config.get('min_samples', 3)
+        debug = collision_config.get('debug', False)
+
+        return CollisionDetector(
+            enabled=enabled,
+            position_threshold=position_threshold,
+            stagnation_duration=stagnation_duration,
+            sample_interval=sample_interval,
+            min_samples=min_samples,
+            debug=debug
+        )
 
     def connect(self) -> bool:
         """Connect to robot."""

@@ -42,7 +42,7 @@ class BaxterClawPlugin:
             use_d455: Use D455 depth camera for vision tasks (recommended)
         """
         self.bridge_url = bridge_url
-        self.client = httpx.Client(timeout=120.0)  # 增加到 120 秒，支持复杂任务
+        self.client = httpx.Client(timeout=300.0)  # 增加到 300 秒（5分钟），支持复杂任务
         self.use_d455 = use_d455
 
         # LLM configuration for skill selection
@@ -274,30 +274,8 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         if not object_name:
             return {'success': False, 'message': 'Missing object_name parameter'}
 
-        # Handle arm='auto': locate object first to determine which arm to use
-        if arm == 'auto':
-            try:
-                locate_response = self.client.post(
-                    f"{self.bridge_url}/vision/locate_object",
-                    json={
-                        'object_name': object_name,
-                        'use_d455': self.use_d455
-                    }
-                )
-                locate_response.raise_for_status()
-                locate_result = locate_response.json()
-
-                if locate_result.get('success') and locate_result.get('position'):
-                    position = locate_result['position']
-                    arm = self._choose_arm_by_position(position)
-                    print(f"[Auto-select] Object at {position}, choosing {arm} arm")
-                else:
-                    arm = 'right'
-                    print(f"[Auto-select] Localization failed, defaulting to right arm")
-            except Exception as e:
-                print(f"[Auto-select] Error during localization: {e}, defaulting to right arm")
-                arm = 'right'
-
+        # Pass arm='auto' directly to bridge server
+        # Let the server handle arm selection using accurate depth camera position
         response = self.client.post(
             f"{self.bridge_url}/vision/pick_by_name",
             json={
@@ -314,7 +292,7 @@ IMPORTANT: Return ONLY the JSON, no other text."""
                 'success': True,
                 'message': f"成功抓取 {object_name}",
                 'data': result,
-                'arm_used': arm
+                'arm_used': result.get('arm', arm)
             }
         else:
             return {
@@ -837,19 +815,18 @@ Now parse the user command and respond with JSON only:"""
             'left' or 'right'
         """
         # Baxter coordinate system (with D455 camera):
-        # y ≈ 0.16m is the center line
-        # y < 0.16m: closer to right arm (use right)
-        # y > 0.16m: closer to left arm (use left)
+        # y = 0.0m is the center line
+        # y < 0.0m: closer to right arm (use right)
+        # y > 0.0m: closer to left arm (use left)
         y = position[1] if len(position) > 1 else 0.0
 
-        CENTER_Y = 0.16  # Center line between arms
+        CENTER_Y = 0.0  # Center line between arms
 
         if y > CENTER_Y + 0.05:  # Object on left side (threshold 5cm)
             return 'left'
         elif y < CENTER_Y - 0.05:  # Object on right side
             return 'right'
         else:  # Object in center, default to right
-            return 'right'
             return 'right'
 
     def execute_action(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:

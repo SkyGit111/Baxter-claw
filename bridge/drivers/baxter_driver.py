@@ -341,7 +341,7 @@ class BaxterDriver(ArmDriver):
             return False
 
     def select_arm_by_y_coordinate(
-        self, position: List[float], y_threshold: float = 0.16
+        self, position: List[float], y_threshold: float = 0.0
     ) -> str:
         """Select arm based on Y-coordinate with a threshold.
 
@@ -351,7 +351,7 @@ class BaxterDriver(ArmDriver):
 
         Args:
             position: Target position [x, y, z]
-            y_threshold: Y-coordinate threshold (default: 0.16m)
+            y_threshold: Y-coordinate threshold (default: 0.0m)
 
         Returns:
             'left' or 'right'

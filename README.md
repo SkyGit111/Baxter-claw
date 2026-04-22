@@ -19,6 +19,7 @@ Baxter-Claw enables intuitive natural language interaction with the Baxter resea
 - 🎯 Single-arm control (right arm) with dual-arm interface reserved
 - 📷 Camera interface for future vision integration
 - 🧪 Mock driver for testing without hardware
+- ⚠️ Collision detection (experimental) - detects arm stagnation during motion
 
 ## Quick Start
 
@@ -96,6 +97,7 @@ Return arm to predefined home position.
 - 🏗️ [Architecture](docs/architecture.md)
 - 📡 [API Reference](docs/api.md)
 - 🛡️ [Safety Guidelines](docs/safety.md)
+- ⚠️ [Collision Detection](COLLISION_DETECTION.md) - Experimental feature
 
 ## Project Structure
 
@@ -105,6 +107,7 @@ baxter-claw/
 │   ├── drivers/        # Robot drivers (Baxter, Mock)
 │   ├── primitives.py   # High-level action primitives
 │   ├── safety.py       # Safety validation
+│   ├── collision_detector.py  # Collision detection (experimental)
 │   └── server.py       # FastAPI server
 ├── plugin/             # OpenClaw TypeScript plugin
 ├── config/             # Configuration files
@@ -127,6 +130,12 @@ pytest tests/ -v
 
 # Test primitives
 python examples/test_primitives.py
+
+# Test collision detection
+python test_collision_detection.py
+
+# Run collision detection demo
+python demo_collision_detection.py
 ```
 
 ### Running Tests

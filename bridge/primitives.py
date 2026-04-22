@@ -22,7 +22,8 @@ class BaxterPrimitives:
         driver: ArmDriver,
         safety: SafetyValidator,
         vlm_client: Optional[VLMClient] = None,
-        grasp_verifier: Optional['GraspVerifier'] = None
+        grasp_verifier: Optional['GraspVerifier'] = None,
+        collision_detector: Optional['CollisionDetector'] = None
     ):
         """Initialize primitives.
 
@@ -31,11 +32,13 @@ class BaxterPrimitives:
             safety: Safety validator instance
             vlm_client: Optional VLM client for vision features
             grasp_verifier: Optional grasp verifier for post-pick validation
+            collision_detector: Optional collision detector for motion safety
         """
         self.driver = driver
         self.safety = safety
         self.vlm_client = vlm_client
         self.grasp_verifier = grasp_verifier
+        self.collision_detector = collision_detector
 
         # Initialize multi-view VLM coordinator if VLM is available
         self.multi_view_vlm = None
@@ -644,8 +647,8 @@ class BaxterPrimitives:
 
                 # Auto-select arm based on Y-coordinate if requested
                 if arm == 'auto':
-                    selected_arm = self.driver.select_arm_by_y_coordinate(position, y_threshold=0.16)
-                    print(f"  Auto-selected {selected_arm} arm (Y={position[1]:.3f}m, threshold=0.16m)")
+                    selected_arm = self.driver.select_arm_by_y_coordinate(position, y_threshold=0.0)
+                    print(f"  Auto-selected {selected_arm} arm (Y={position[1]:.3f}m, threshold=0.0m)")
                     arm = selected_arm
 
             else:
