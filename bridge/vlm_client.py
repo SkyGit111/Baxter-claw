@@ -543,8 +543,15 @@ Respond in JSON format:
             # Call VLM
             response = await self._call_vlm(image_b64, prompt)
 
-            # Extract text from response
-            response_text = self._extract_text(response)
+            # Extract text from response based on provider
+            if self.provider == 'claude':
+                response_text = response['content'][0]['text']
+            elif self.provider == 'openai':
+                response_text = response['choices'][0]['message']['content']
+            elif self.provider == 'qwen':
+                response_text = response['choices'][0]['message']['content']
+            else:
+                response_text = str(response)
 
             return response_text
 

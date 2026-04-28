@@ -198,6 +198,54 @@
 
 ---
 
+## Skill 11: parallel_pick_and_place
+**Description**: Execute two pick-and-place tasks simultaneously with both arms
+
+**When to use**:
+- User asks to do two tasks at the same time with both arms
+- User explicitly mentions "同时", "simultaneously", "at the same time", "并行"
+- Examples: 
+  - "用右手抓取蓝色小方块放到红色方块上，同时用左手抓取黄色方块放到魔方上"
+  - "simultaneously pick blue cube with right arm and yellow cube with left arm"
+
+**Parameters**:
+- `left_task` (object, required): Task for left arm
+  - `source_object` (string): Object to pick with left arm
+  - `target_object` (string): Where to place (object name)
+  - `relative_position` (string): "on_top", "next_to", "behind", "in_front"
+- `right_task` (object, required): Task for right arm
+  - `source_object` (string): Object to pick with right arm
+  - `target_object` (string): Where to place (object name)
+  - `relative_position` (string): "on_top", "next_to", "behind", "in_front"
+
+**Execution**:
+1. Start left arm task in parallel: pick left_task.source_object → place relative to left_task.target_object
+2. Start right arm task in parallel: pick right_task.source_object → place relative to right_task.target_object
+3. Wait for both tasks to complete
+4. If both successful, skill is DONE
+5. If either fails, skill FAILS with details
+
+**Success condition**: Both arms complete their pick-and-place tasks successfully
+
+**Example**:
+```json
+{
+  "skill": "parallel_pick_and_place",
+  "left_task": {
+    "source_object": "黄色小方块",
+    "target_object": "魔方",
+    "relative_position": "on_top"
+  },
+  "right_task": {
+    "source_object": "蓝色小方块",
+    "target_object": "红色小方块",
+    "relative_position": "on_top"
+  }
+}
+```
+
+---
+
 ## Notes for LLM
 
 ### Parameter Extraction Rules
