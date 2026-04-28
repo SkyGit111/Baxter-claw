@@ -2,6 +2,7 @@
 
 from typing import Dict, List, Optional
 import time
+import threading
 import numpy as np
 
 from .drivers.base import ArmDriver
@@ -1007,11 +1008,26 @@ class BaxterPrimitives:
             if not right_safe:
                 return {"success": False, "message": f"Right pre-grasp unsafe: {msg}"}
 
-            # Move simultaneously (in real implementation, use threading or async)
-            success_left = self.driver.move_to_pose('left', left_pre + orientation, speed)
-            success_right = self.driver.move_to_pose('right', right_pre + orientation, speed)
+            # Move simultaneously using threading for true parallelism
+            left_result = [False]
+            right_result = [False]
 
-            if not (success_left and success_right):
+            def move_left():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed)
+
+            def move_right():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed)
+
+            left_thread = threading.Thread(target=move_left)
+            right_thread = threading.Thread(target=move_right)
+
+            left_thread.start()
+            right_thread.start()
+
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
                 return {"success": False, "message": "Failed to reach pre-grasp positions"}
 
             # Step 2: Open both grippers
@@ -1022,10 +1038,26 @@ class BaxterPrimitives:
 
             # Step 3: Descend both arms simultaneously
             print("  Descending to grasp positions...")
-            success_left = self.driver.move_to_pose('left', left_pos + orientation, speed * 0.5)
-            success_right = self.driver.move_to_pose('right', right_pos + orientation, speed * 0.5)
 
-            if not (success_left and success_right):
+            left_result = [False]
+            right_result = [False]
+
+            def move_left():
+                left_result[0] = self.driver.move_to_pose('left', left_pos + orientation, speed * 0.5)
+
+            def move_right():
+                right_result[0] = self.driver.move_to_pose('right', right_pos + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left)
+            right_thread = threading.Thread(target=move_right)
+
+            left_thread.start()
+            right_thread.start()
+
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
                 return {"success": False, "message": "Failed to reach grasp positions"}
 
             # Step 4: Close both grippers
@@ -1036,10 +1068,26 @@ class BaxterPrimitives:
 
             # Step 5: Lift both arms simultaneously
             print("  Lifting object...")
-            success_left = self.driver.move_to_pose('left', left_pre + orientation, speed * 0.5)
-            success_right = self.driver.move_to_pose('right', right_pre + orientation, speed * 0.5)
 
-            if not (success_left and success_right):
+            left_result = [False]
+            right_result = [False]
+
+            def move_left():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed * 0.5)
+
+            def move_right():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left)
+            right_thread = threading.Thread(target=move_right)
+
+            left_thread.start()
+            right_thread.start()
+
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
                 return {"success": False, "message": "Failed to lift object"}
 
             return {
@@ -1180,12 +1228,28 @@ class BaxterPrimitives:
             if not right_safe:
                 return {"success": False, "message": f"Right position unsafe: {msg}"}
 
-            # Execute synchronized motion
+            # Execute synchronized motion using threading
             print("  Moving both arms simultaneously...")
-            success_left = self.driver.move_to_pose('left', left_position + left_orientation, speed)
-            success_right = self.driver.move_to_pose('right', right_position + right_orientation, speed)
 
-            if not (success_left and success_right):
+            left_result = [False]
+            right_result = [False]
+
+            def move_left():
+                left_result[0] = self.driver.move_to_pose('left', left_position + left_orientation, speed)
+
+            def move_right():
+                right_result[0] = self.driver.move_to_pose('right', right_position + right_orientation, speed)
+
+            left_thread = threading.Thread(target=move_left)
+            right_thread = threading.Thread(target=move_right)
+
+            left_thread.start()
+            right_thread.start()
+
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
                 return {"success": False, "message": "Failed to reach target positions"}
 
             return {
