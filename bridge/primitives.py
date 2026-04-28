@@ -1184,7 +1184,7 @@ class BaxterPrimitives:
         except Exception as e:
             return {"success": False, "message": f"Handover failed: {str(e)}"}
 
-    def parallel_pick_two_objects(
+    async def parallel_pick_two_objects(
         self,
         left_object_name: str,
         right_object_name: str,
@@ -1222,11 +1222,11 @@ class BaxterPrimitives:
             print(f"  [Phase 1] Locating objects...")
 
             print(f"    Locating {left_object_name}...")
-            left_result = asyncio.run(self.locate_object_multiview(
+            left_result = await self.locate_object_multiview(
                 left_object_name,
                 arm='left',
                 use_wrist_refinement=False
-            ))
+            )
 
             if not left_result.get('success') or not left_result.get('found'):
                 return {"success": False, "message": f"Could not locate {left_object_name}"}
@@ -1235,11 +1235,11 @@ class BaxterPrimitives:
             print(f"    ✓ Found {left_object_name} at {left_position}")
 
             print(f"    Locating {right_object_name}...")
-            right_result = asyncio.run(self.locate_object_multiview(
+            right_result = await self.locate_object_multiview(
                 right_object_name,
                 arm='right',
                 use_wrist_refinement=False
-            ))
+            )
 
             if not right_result.get('success') or not right_result.get('found'):
                 return {"success": False, "message": f"Could not locate {right_object_name}"}

@@ -538,7 +538,7 @@ async def parallel_pick_two(req: Dict) -> DualArmResponse:
         if not left_object or not right_object:
             raise HTTPException(status_code=400, detail="Missing left_object_name or right_object_name")
 
-        result = manager.primitives.parallel_pick_two_objects(
+        result = await manager.primitives.parallel_pick_two_objects(
             left_object_name=left_object,
             right_object_name=right_object,
             approach_height=req.get('approach_height', 0.1),
