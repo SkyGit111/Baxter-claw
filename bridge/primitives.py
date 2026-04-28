@@ -1346,6 +1346,183 @@ class BaxterPrimitives:
         except Exception as e:
             return {"success": False, "message": f"ParallelPickTwo failed: {str(e)}"}
 
+    async def parallel_place_two_objects(
+        self,
+        left_target_name: str,
+        left_relative_position: str,
+        right_target_name: str,
+        right_relative_position: str,
+        approach_height: float = 0.1,
+        speed: float = 0.3
+    ) -> Dict:
+        """Place two held objects simultaneously to different targets.
+
+        Strategy:
+        1. Locate both target objects first (sequential, uses D455)
+        2. Calculate place positions for both arms
+        3. Move both arms to pre-place positions simultaneously
+        4. Descend both arms simultaneously
+        5. Open both grippers simultaneously
+        6. Retract both arms simultaneously
+
+        Args:
+            left_target_name: Target object for left arm placement
+            left_relative_position: Where to place left object
+            right_target_name: Target object for right arm placement
+            right_relative_position: Where to place right object
+            approach_height: Height offset for pre-place
+            speed: Motion speed
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            print(f"[Primitive] ParallelPlaceTwo:")
+            print(f"  Left: place relative to {left_target_name} ({left_relative_position})")
+            print(f"  Right: place relative to {right_target_name} ({right_relative_position})")
+
+            if not self.multi_view_vlm:
+                return {"success": False, "message": "Multi-view VLM not available"}
+
+            # Phase 1: Locate both target objects (sequential to avoid D455 conflicts)
+            print(f"  [Phase 1] Locating target objects...")
+
+            print(f"    Locating {left_target_name}...")
+            left_result = await self.locate_object_multiview(
+                left_target_name,
+                arm='left',
+                use_wrist_refinement=False
+            )
+
+            if not left_result.get('success') or not left_result.get('found'):
+                return {"success": False, "message": f"Could not locate {left_target_name}"}
+
+            left_target_pos = left_result['position']
+            print(f"    ✓ Found {left_target_name} at {left_target_pos}")
+
+            print(f"    Locating {right_target_name}...")
+            right_result = await self.locate_object_multiview(
+                right_target_name,
+                arm='right',
+                use_wrist_refinement=False
+            )
+
+            if not right_result.get('success') or not right_result.get('found'):
+                return {"success": False, "message": f"Could not locate {right_target_name}"}
+
+            right_target_pos = right_result['position']
+            print(f"    ✓ Found {right_target_name} at {right_target_pos}")
+
+            # Phase 2: Calculate place positions
+            print(f"  [Phase 2] Calculating place positions...")
+
+            def calculate_relative_position(target_pos, relative_pos):
+                if relative_pos == "on_top":
+                    return [target_pos[0], target_pos[1], target_pos[2] + 0.05]
+                elif relative_pos == "next_to":
+                    return [target_pos[0], target_pos[1] + 0.15, target_pos[2]]
+                elif relative_pos == "behind":
+                    return [target_pos[0] - 0.15, target_pos[1], target_pos[2]]
+                elif relative_pos == "in_front":
+                    return [target_pos[0] + 0.15, target_pos[1], target_pos[2]]
+                else:
+                    return [target_pos[0], target_pos[1] + 0.15, target_pos[2]]
+
+            left_place_pos = calculate_relative_position(left_target_pos, left_relative_position)
+            right_place_pos = calculate_relative_position(right_target_pos, right_relative_position)
+
+            orientation = [3.14159, 0.0, 0.0]
+
+            left_pre = [left_place_pos[0], left_place_pos[1], left_place_pos[2] + approach_height]
+            left_place = [left_place_pos[0], left_place_pos[1], -0.16]
+
+            right_pre = [right_place_pos[0], right_place_pos[1], right_place_pos[2] + approach_height]
+            right_place = [right_place_pos[0], right_place_pos[1], -0.16]
+
+            # Phase 3: Execute parallel place motions
+            print(f"  [Phase 3] Executing parallel place motions...")
+
+            # Step 1: Lift to pre-place (parallel)
+            print("    Lifting to pre-place positions (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_pre():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed)
+
+            def move_right_pre():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed)
+
+            left_thread = threading.Thread(target=move_left_pre)
+            right_thread = threading.Thread(target=move_right_pre)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to reach pre-place positions"}
+
+            # Step 2: Descend (parallel)
+            print("    Descending to place (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_place():
+                left_result[0] = self.driver.move_to_pose('left', left_place + orientation, speed * 0.5)
+
+            def move_right_place():
+                right_result[0] = self.driver.move_to_pose('right', right_place + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left_place)
+            right_thread = threading.Thread(target=move_right_place)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to reach place positions"}
+
+            # Step 3: Open grippers
+            print("    Opening grippers...")
+            self.driver.gripper_command('left', 'open')
+            self.driver.gripper_command('right', 'open')
+            time.sleep(0.8)
+
+            # Step 4: Retract (parallel)
+            print("    Retracting (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_retract():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed * 0.5)
+
+            def move_right_retract():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left_retract)
+            right_thread = threading.Thread(target=move_right_retract)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to retract"}
+
+            return {
+                "success": True,
+                "message": f"Successfully placed both objects in parallel",
+                "left_target": left_target_name,
+                "right_target": right_target_name,
+                "left_position": left_place_pos,
+                "right_position": right_place_pos
+            }
+
+        except Exception as e:
+            return {"success": False, "message": f"ParallelPlaceTwo failed: {str(e)}"}
+
     def synchronized_move(
         self,
         left_position: List[float],

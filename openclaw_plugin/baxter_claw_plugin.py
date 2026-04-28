@@ -533,10 +533,8 @@ IMPORTANT: Return ONLY the JSON, no other text."""
     def _execute_parallel_pick_and_place(self, params: Dict) -> Dict:
         """Execute parallel pick-and-place with both arms.
 
-        Strategy: Use new parallel_pick_two_objects primitive for true physical parallelism.
+        Strategy: Use parallel primitives for FULL physical parallelism.
         """
-        import threading
-
         # ANSI color codes
         GREEN = '\033[92m'
         RED = '\033[91m'
@@ -552,7 +550,7 @@ IMPORTANT: Return ONLY the JSON, no other text."""
             return {'success': False, 'message': 'Missing left_task or right_task parameters'}
 
         print(f"\n{CYAN}{'='*70}{RESET}")
-        print(f"{CYAN}[Parallel] Starting TRUE parallel dual-arm execution{RESET}")
+        print(f"{CYAN}[Parallel] Starting FULL parallel dual-arm execution{RESET}")
         print(f"{CYAN}{'='*70}{RESET}")
         print(f"{BLUE}[Left Arm Task]{RESET}")
         print(f"  Source: {left_task.get('source_object')}")
@@ -564,8 +562,8 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         print(f"  Position: {right_task.get('relative_position', 'on_top')}")
         print(f"{CYAN}{'='*70}{RESET}\n")
 
-        # Phase 1: Parallel pick using new primitive
-        print(f"{YELLOW}[Phase 1] True Parallel Pick - Arms move simultaneously{RESET}")
+        # Phase 1: Parallel pick
+        print(f"{YELLOW}[Phase 1] Parallel Pick - Arms move simultaneously{RESET}")
 
         try:
             response = self.client.post(
@@ -592,71 +590,55 @@ IMPORTANT: Return ONLY the JSON, no other text."""
             print(f"{RED}[Phase 1] ✗ Exception: {str(e)}{RESET}")
             return {'success': False, 'message': f'Parallel pick error: {str(e)}'}
 
-        # Phase 2: Sequential place (to avoid camera conflicts)
-        print(f"{YELLOW}[Phase 2] Sequential Place - Avoid camera conflicts{RESET}")
+        # Phase 2: Parallel place
+        print(f"{YELLOW}[Phase 2] Parallel Place - Arms move simultaneously{RESET}")
 
-        # Place left arm first
-        print(f"{BLUE}[Left Place] Starting...{RESET}")
-        left_place_result = self._execute_place_object_relative({
-            'target_object_name': left_task.get('target_object'),
-            'relative_position': left_task.get('relative_position', 'on_top'),
-            'arm': 'left'
-        })
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/dualarm/parallel_place_two",
+                json={
+                    'left_target_name': left_task.get('target_object'),
+                    'left_relative_position': left_task.get('relative_position', 'on_top'),
+                    'right_target_name': right_task.get('target_object'),
+                    'right_relative_position': right_task.get('relative_position', 'on_top')
+                }
+            )
+            response.raise_for_status()
+            place_result = response.json()
 
-        if left_place_result.get('success'):
-            print(f"{GREEN}[Left Place] ✓ Completed{RESET}")
-        else:
-            print(f"{RED}[Left Place] ✗ Failed: {left_place_result.get('message')}{RESET}")
+            if not place_result.get('success'):
+                print(f"{RED}[Phase 2] ✗ Parallel place failed: {place_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"并行放置失败: {place_result.get('message')}",
+                    'pick_result': pick_result,
+                    'place_result': place_result
+                }
 
-        # Place right arm second
-        print(f"{BLUE}[Right Place] Starting...{RESET}")
-        right_place_result = self._execute_place_object_relative({
-            'target_object_name': right_task.get('target_object'),
-            'relative_position': right_task.get('relative_position', 'on_top'),
-            'arm': 'right'
-        })
+            print(f"{GREEN}[Phase 2] ✓ Both objects placed simultaneously{RESET}\n")
 
-        if right_place_result.get('success'):
-            print(f"{GREEN}[Right Place] ✓ Completed{RESET}")
-        else:
-            print(f"{RED}[Right Place] ✗ Failed: {right_place_result.get('message')}{RESET}")
+        except Exception as e:
+            print(f"{RED}[Phase 2] ✗ Exception: {str(e)}{RESET}")
+            return {
+                'success': False,
+                'message': f'Parallel place error: {str(e)}',
+                'pick_result': pick_result
+            }
 
         # Summary
-        left_success = left_place_result.get('success', False)
-        right_success = right_place_result.get('success', False)
-
         print(f"\n{CYAN}{'='*70}{RESET}")
         print(f"{CYAN}[Parallel] Execution Summary{RESET}")
         print(f"{CYAN}{'='*70}{RESET}")
-        print(f"Left Arm:  {'✓ SUCCESS' if left_success else '✗ FAILED'}")
-        if not left_success:
-            print(f"  {RED}Error: {left_place_result.get('message', 'Unknown')}{RESET}")
-        print(f"Right Arm: {'✓ SUCCESS' if right_success else '✗ FAILED'}")
-        if not right_success:
-            print(f"  {RED}Error: {right_place_result.get('message', 'Unknown')}{RESET}")
+        print(f"Left Arm:  ✓ SUCCESS")
+        print(f"Right Arm: ✓ SUCCESS")
         print(f"{CYAN}{'='*70}{RESET}\n")
 
-        if left_success and right_success:
-            return {
-                'success': True,
-                'message': f"成功完成双臂真正并行任务",
-                'pick_result': pick_result,
-                'left_place': left_place_result,
-                'right_place': right_place_result
-            }
-        else:
-            messages = []
-            if not left_success:
-                messages.append(f"左臂放置失败: {left_place_result.get('message', '未知错误')}")
-            if not right_success:
-                messages.append(f"右臂放置失败: {right_place_result.get('message', '未知错误')}")
-            return {
-                'success': False,
-                'message': '; '.join(messages),
-                'pick_result': pick_result,
-                'left_place': left_place_result,
-                'right_place': right_place_result
-            }
+        return {
+            'success': True,
+            'message': f"成功完成双臂完全并行任务",
+            'pick_result': pick_result,
+            'place_result': place_result
+        }
 
     # ============================================================
     # OLD: Intent-based architecture (kept for reference)

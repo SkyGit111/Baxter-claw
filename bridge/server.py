@@ -555,6 +555,43 @@ async def parallel_pick_two(req: Dict) -> DualArmResponse:
         raise HTTPException(status_code=400, detail=f"Parallel pick failed: {str(e)}")
 
 
+@app.post("/dualarm/parallel_place_two")
+async def parallel_place_two(req: Dict) -> DualArmResponse:
+    """Place two held objects simultaneously to different targets.
+
+    This provides TRUE physical parallelism - both arms move at the same time.
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        left_target = req.get('left_target_name')
+        left_position = req.get('left_relative_position', 'on_top')
+        right_target = req.get('right_target_name')
+        right_position = req.get('right_relative_position', 'on_top')
+
+        if not left_target or not right_target:
+            raise HTTPException(status_code=400, detail="Missing target names")
+
+        result = await manager.primitives.parallel_place_two_objects(
+            left_target_name=left_target,
+            left_relative_position=left_position,
+            right_target_name=right_target,
+            right_relative_position=right_position,
+            approach_height=req.get('approach_height', 0.1),
+            speed=req.get('speed', 0.3)
+        )
+
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Parallel place failed'))
+
+        return DualArmResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parallel place failed: {str(e)}")
+
+
 def main():
     """Main entry point for bridge server."""
     parser = argparse.ArgumentParser(description="Baxter-Claw Bridge Server")
