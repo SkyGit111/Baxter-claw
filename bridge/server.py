@@ -5,7 +5,7 @@ Provides REST API for high-level robot control via action primitives.
 
 import sys
 import argparse
-from typing import Optional
+from typing import Optional, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -520,6 +520,39 @@ async def synchronized_move(req: SynchronizedMoveRequest) -> DualArmResponse:
         return DualArmResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Synchronized move failed: {str(e)}")
+
+
+@app.post("/dualarm/parallel_pick_two")
+async def parallel_pick_two(req: Dict) -> DualArmResponse:
+    """Pick two different objects simultaneously with both arms.
+
+    This provides TRUE physical parallelism - both arms move at the same time.
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        left_object = req.get('left_object_name')
+        right_object = req.get('right_object_name')
+
+        if not left_object or not right_object:
+            raise HTTPException(status_code=400, detail="Missing left_object_name or right_object_name")
+
+        result = manager.primitives.parallel_pick_two_objects(
+            left_object_name=left_object,
+            right_object_name=right_object,
+            approach_height=req.get('approach_height', 0.1),
+            speed=req.get('speed', 0.3)
+        )
+
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result.get('message', 'Parallel pick failed'))
+
+        return DualArmResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parallel pick failed: {str(e)}")
 
 
 def main():

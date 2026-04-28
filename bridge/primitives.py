@@ -3,6 +3,7 @@
 from typing import Dict, List, Optional
 import time
 import threading
+import asyncio
 import numpy as np
 
 from .drivers.base import ArmDriver
@@ -1182,6 +1183,168 @@ class BaxterPrimitives:
 
         except Exception as e:
             return {"success": False, "message": f"Handover failed: {str(e)}"}
+
+    def parallel_pick_two_objects(
+        self,
+        left_object_name: str,
+        right_object_name: str,
+        approach_height: float = 0.1,
+        speed: float = 0.3
+    ) -> Dict:
+        """Pick two different objects simultaneously with both arms.
+
+        This is different from bimanual_pick (which picks ONE large object with both arms).
+        This picks TWO separate objects at the same time.
+
+        Strategy:
+        1. Locate both objects first (sequential, uses camera)
+        2. Move both arms to pre-grasp positions simultaneously
+        3. Descend both arms simultaneously
+        4. Close both grippers simultaneously
+        5. Lift both arms simultaneously
+
+        Args:
+            left_object_name: Object for left arm to pick
+            right_object_name: Object for right arm to pick
+            approach_height: Height offset for pre-grasp
+            speed: Motion speed
+
+        Returns:
+            Dict with success status and positions
+        """
+        try:
+            print(f"[Primitive] ParallelPickTwo: left={left_object_name}, right={right_object_name}")
+
+            if not self.multi_view_vlm:
+                return {"success": False, "message": "Multi-view VLM not available"}
+
+            # Phase 1: Locate both objects (sequential to avoid camera conflicts)
+            print(f"  [Phase 1] Locating objects...")
+
+            print(f"    Locating {left_object_name}...")
+            left_result = asyncio.run(self.locate_object_multiview(
+                left_object_name,
+                arm='left',
+                use_wrist_refinement=False
+            ))
+
+            if not left_result.get('success') or not left_result.get('found'):
+                return {"success": False, "message": f"Could not locate {left_object_name}"}
+
+            left_position = left_result['position']
+            print(f"    ✓ Found {left_object_name} at {left_position}")
+
+            print(f"    Locating {right_object_name}...")
+            right_result = asyncio.run(self.locate_object_multiview(
+                right_object_name,
+                arm='right',
+                use_wrist_refinement=False
+            ))
+
+            if not right_result.get('success') or not right_result.get('found'):
+                return {"success": False, "message": f"Could not locate {right_object_name}"}
+
+            right_position = right_result['position']
+            print(f"    ✓ Found {right_object_name} at {right_position}")
+
+            # Phase 2: Execute parallel pick motions
+            print(f"  [Phase 2] Executing parallel pick motions...")
+
+            orientation = [3.14159, 0.0, 0.0]  # Downward facing
+
+            # Calculate poses
+            left_pre = [left_position[0], left_position[1], left_position[2] + approach_height]
+            left_grasp = [left_position[0], left_position[1], -0.16]  # Fixed Z
+
+            right_pre = [right_position[0], right_position[1], right_position[2] + approach_height]
+            right_grasp = [right_position[0], right_position[1], -0.16]  # Fixed Z
+
+            # Step 1: Move to pre-grasp (parallel)
+            print("    Moving to pre-grasp positions (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_pre():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed)
+
+            def move_right_pre():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed)
+
+            left_thread = threading.Thread(target=move_left_pre)
+            right_thread = threading.Thread(target=move_right_pre)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to reach pre-grasp positions"}
+
+            # Step 2: Open grippers
+            print("    Opening grippers...")
+            self.driver.gripper_command('left', 'open')
+            self.driver.gripper_command('right', 'open')
+            time.sleep(0.5)
+
+            # Step 3: Descend (parallel)
+            print("    Descending to grasp (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_grasp():
+                left_result[0] = self.driver.move_to_pose('left', left_grasp + orientation, speed * 0.5)
+
+            def move_right_grasp():
+                right_result[0] = self.driver.move_to_pose('right', right_grasp + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left_grasp)
+            right_thread = threading.Thread(target=move_right_grasp)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to reach grasp positions"}
+
+            # Step 4: Close grippers
+            print("    Closing grippers...")
+            self.driver.gripper_command('left', 'close', force=30.0)
+            self.driver.gripper_command('right', 'close', force=30.0)
+            time.sleep(0.8)
+
+            # Step 5: Lift (parallel)
+            print("    Lifting objects (parallel)...")
+            left_result = [False]
+            right_result = [False]
+
+            def move_left_lift():
+                left_result[0] = self.driver.move_to_pose('left', left_pre + orientation, speed * 0.5)
+
+            def move_right_lift():
+                right_result[0] = self.driver.move_to_pose('right', right_pre + orientation, speed * 0.5)
+
+            left_thread = threading.Thread(target=move_left_lift)
+            right_thread = threading.Thread(target=move_right_lift)
+            left_thread.start()
+            right_thread.start()
+            left_thread.join()
+            right_thread.join()
+
+            if not (left_result[0] and right_result[0]):
+                return {"success": False, "message": "Failed to lift objects"}
+
+            return {
+                "success": True,
+                "message": f"Successfully picked {left_object_name} and {right_object_name} in parallel",
+                "left_object": left_object_name,
+                "right_object": right_object_name,
+                "left_position": left_position,
+                "right_position": right_position
+            }
+
+        except Exception as e:
+            return {"success": False, "message": f"ParallelPickTwo failed: {str(e)}"}
 
     def synchronized_move(
         self,

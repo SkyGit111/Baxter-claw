@@ -533,7 +533,7 @@ IMPORTANT: Return ONLY the JSON, no other text."""
     def _execute_parallel_pick_and_place(self, params: Dict) -> Dict:
         """Execute parallel pick-and-place with both arms.
 
-        Strategy: Pick in parallel, then place sequentially (to avoid camera conflicts).
+        Strategy: Use new parallel_pick_two_objects primitive for true physical parallelism.
         """
         import threading
 
@@ -552,7 +552,7 @@ IMPORTANT: Return ONLY the JSON, no other text."""
             return {'success': False, 'message': 'Missing left_task or right_task parameters'}
 
         print(f"\n{CYAN}{'='*70}{RESET}")
-        print(f"{CYAN}[Parallel] Starting dual-arm parallel execution{RESET}")
+        print(f"{CYAN}[Parallel] Starting TRUE parallel dual-arm execution{RESET}")
         print(f"{CYAN}{'='*70}{RESET}")
         print(f"{BLUE}[Left Arm Task]{RESET}")
         print(f"  Source: {left_task.get('source_object')}")
@@ -564,65 +564,35 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         print(f"  Position: {right_task.get('relative_position', 'on_top')}")
         print(f"{CYAN}{'='*70}{RESET}\n")
 
-        # Phase 1: Pick in parallel
-        print(f"{YELLOW}[Phase 1] Parallel Pick - Both arms pick simultaneously{RESET}")
+        # Phase 1: Parallel pick using new primitive
+        print(f"{YELLOW}[Phase 1] True Parallel Pick - Arms move simultaneously{RESET}")
 
-        left_pick_result = [None]
-        right_pick_result = [None]
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/dualarm/parallel_pick_two",
+                json={
+                    'left_object_name': left_task.get('source_object'),
+                    'right_object_name': right_task.get('source_object')
+                }
+            )
+            response.raise_for_status()
+            pick_result = response.json()
 
-        def pick_left():
-            try:
-                print(f"{GREEN}[Left Pick] Started{RESET}")
-                left_pick_result[0] = self._execute_pick_object({
-                    'object_name': left_task.get('source_object'),
-                    'arm': 'left'
-                })
-                if left_pick_result[0].get('success'):
-                    print(f"{GREEN}[Left Pick] ✓ Completed{RESET}")
-                else:
-                    print(f"{RED}[Left Pick] ✗ Failed: {left_pick_result[0].get('message')}{RESET}")
-            except Exception as e:
-                print(f"{RED}[Left Pick] ✗ Exception: {str(e)}{RESET}")
-                left_pick_result[0] = {'success': False, 'message': f'Pick error: {str(e)}'}
+            if not pick_result.get('success'):
+                print(f"{RED}[Phase 1] ✗ Parallel pick failed: {pick_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"并行抓取失败: {pick_result.get('message')}",
+                    'pick_result': pick_result
+                }
 
-        def pick_right():
-            try:
-                print(f"{GREEN}[Right Pick] Started{RESET}")
-                right_pick_result[0] = self._execute_pick_object({
-                    'object_name': right_task.get('source_object'),
-                    'arm': 'right'
-                })
-                if right_pick_result[0].get('success'):
-                    print(f"{GREEN}[Right Pick] ✓ Completed{RESET}")
-                else:
-                    print(f"{RED}[Right Pick] ✗ Failed: {right_pick_result[0].get('message')}{RESET}")
-            except Exception as e:
-                print(f"{RED}[Right Pick] ✗ Exception: {str(e)}{RESET}")
-                right_pick_result[0] = {'success': False, 'message': f'Pick error: {str(e)}'}
+            print(f"{GREEN}[Phase 1] ✓ Both objects picked simultaneously{RESET}\n")
 
-        left_thread = threading.Thread(target=pick_left, name="LeftPickThread")
-        right_thread = threading.Thread(target=pick_right, name="RightPickThread")
+        except Exception as e:
+            print(f"{RED}[Phase 1] ✗ Exception: {str(e)}{RESET}")
+            return {'success': False, 'message': f'Parallel pick error: {str(e)}'}
 
-        left_thread.start()
-        right_thread.start()
-        left_thread.join()
-        right_thread.join()
-
-        left_pick_success = left_pick_result[0] and left_pick_result[0].get('success', False)
-        right_pick_success = right_pick_result[0] and right_pick_result[0].get('success', False)
-
-        if not (left_pick_success and right_pick_success):
-            print(f"{RED}[Phase 1] Pick phase failed{RESET}")
-            return {
-                'success': False,
-                'message': f"Pick失败 - 左臂: {'成功' if left_pick_success else '失败'}, 右臂: {'成功' if right_pick_success else '失败'}",
-                'left_pick': left_pick_result[0],
-                'right_pick': right_pick_result[0]
-            }
-
-        print(f"{GREEN}[Phase 1] ✓ Both picks completed successfully{RESET}\n")
-
-        # Phase 2: Place sequentially (to avoid camera conflicts)
+        # Phase 2: Sequential place (to avoid camera conflicts)
         print(f"{YELLOW}[Phase 2] Sequential Place - Avoid camera conflicts{RESET}")
 
         # Place left arm first
@@ -669,21 +639,23 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         if left_success and right_success:
             return {
                 'success': True,
-                'message': f"成功完成双臂并行任务",
-                'left_result': {'pick': left_pick_result[0], 'place': left_place_result},
-                'right_result': {'pick': right_pick_result[0], 'place': right_place_result}
+                'message': f"成功完成双臂真正并行任务",
+                'pick_result': pick_result,
+                'left_place': left_place_result,
+                'right_place': right_place_result
             }
         else:
             messages = []
             if not left_success:
-                messages.append(f"左臂失败: {left_place_result.get('message', '未知错误')}")
+                messages.append(f"左臂放置失败: {left_place_result.get('message', '未知错误')}")
             if not right_success:
-                messages.append(f"右臂失败: {right_place_result.get('message', '未知错误')}")
+                messages.append(f"右臂放置失败: {right_place_result.get('message', '未知错误')}")
             return {
                 'success': False,
                 'message': '; '.join(messages),
-                'left_result': {'pick': left_pick_result[0], 'place': left_place_result},
-                'right_result': {'pick': right_pick_result[0], 'place': right_place_result}
+                'pick_result': pick_result,
+                'left_place': left_place_result,
+                'right_place': right_place_result
             }
 
     # ============================================================
