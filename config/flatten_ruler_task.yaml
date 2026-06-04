@@ -1,0 +1,67 @@
+# Flatten Articulated Ruler Task Configuration
+# Dual-arm coordinated pulling to straighten an S-shaped folded ruler
+
+flatten_ruler:
+  # VLM localization prompts (2 endpoints only)
+  red_endpoint_prompt: "purple-red "
+  blue_endpoint_prompt: "green-blue "
+
+  # Grasp parameters
+  grasp:
+    grasp_z: -0.16                 # Fixed Z height for grasping endpoints
+    approach_z_offset: 0.08        # Offset for approaching from above
+    grasp_force: 50.0              # Gripper force for holding endpoints (higher for pulling)
+
+    # Initial grasp orientations (measured from real robot in ~45° tilted state)
+    # Full RPY values including the yaw that creates the 45° tilt
+    base_orientation:
+      # Left arm base orientation (measured with 45° tilt)
+      left:
+        roll: 3.1038358690269345     # ~177.84° (nearly inverted)
+        pitch: -0.035596296003942034  # ~-2.04° (slight tilt)
+        yaw: -2.3844022812995074      # ~-136.62° (creates 45° tilt)
+      # Right arm base orientation (measured with 45° tilt)
+      right:
+        roll: -3.120275567785789     # ~-178.78° (nearly inverted)
+        pitch: -0.04267174042586827   # ~-2.44° (slight tilt)
+        yaw: 0.6306226935572778       # ~36.13° (creates 45° tilt)
+
+    # Target orientations (when ruler is straightened, grippers parallel to x-axis)
+    # Adjusted to stay within 45° safety limit
+    target_orientation:
+      # Left arm target orientation (parallel to x-axis)
+      left:
+        roll: 3.1038358690269345     # Keep same roll as initial
+        pitch: -0.035596296003942034  # Keep same pitch as initial
+        yaw: -1.6755160819145563      # -96° (measured, change: ~41°)
+      # Right arm target orientation (parallel to x-axis)
+      right:
+        roll: -3.120275567785789     # Keep same roll as initial
+        pitch: -0.04267174042586827   # Keep same pitch as initial
+        yaw: 1.3962634015954636       # +80° (adjusted from 86° to stay within 45° limit, change: ~44°)
+
+  # Pulling motion parameters
+  pulling:
+    pull_distance: 0.20            # Total distance to pull apart (meters)
+    num_waypoints: 30              # Number of waypoints for smooth motion
+    speed_scale: 0.15              # Speed scale for pulling motion (slow and stable)
+
+    # Safety limits
+    min_separation: 0.15           # Minimum initial distance between endpoints (meters)
+    max_separation: 0.60           # Maximum final distance between endpoints (meters)
+
+    # Orientation interpolation with SAFETY CONSTRAINTS
+    interpolate_yaw: true          # Enable yaw interpolation during pulling
+    max_yaw_change: 0.785398       # Maximum yaw change allowed (45° = π/4 rad)
+                                   # STRICT SAFETY LIMIT - prevents sudden rotations
+
+  # Validation parameters
+  validation:
+    check_ik: true                 # Check IK feasibility for all waypoints
+    check_workspace: true          # Check workspace limits for all waypoints
+
+  # Default task parameters
+  default_task:
+    left_arm: left                 # Left arm grasps red endpoint
+    right_arm: right               # Right arm grasps blue endpoint
+    speed: 0.15                    # Overall speed scale

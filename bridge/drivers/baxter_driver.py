@@ -31,7 +31,13 @@ class BaxterDriver(ArmDriver):
     Requires ROS environment and Baxter SDK to be properly configured.
     """
 
-    def __init__(self, use_depth_camera: bool = False):
+    def __init__(self, use_depth_camera: bool = False, ik_solver_type: str = "enhanced"):
+        """Initialize Baxter driver.
+
+        Args:
+            use_depth_camera: Whether to use RealSense D455 depth camera
+            ik_solver_type: Type of IK solver to use ("enhanced", "moveit", or "basic")
+        """
         if not BAXTER_AVAILABLE:
             raise RuntimeError(
                 "baxter_interface not available. "
@@ -43,6 +49,7 @@ class BaxterDriver(ArmDriver):
         self._limbs = {}
         self._grippers = {}
         self._ik_solver = None  # Will be initialized after connection
+        self._ik_solver_type = ik_solver_type  # Store IK solver type
 
         # Depth camera support
         self._use_depth_camera = use_depth_camera
@@ -89,13 +96,22 @@ class BaxterDriver(ArmDriver):
             except Exception as e:
                 print(f"  Warning: Left gripper calibration failed: {e}")
 
-            # Initialize enhanced IK solver
+            # Initialize IK solver based on configuration
             try:
-                from ..ik_solver import EnhancedIKSolver
-                self._ik_solver = EnhancedIKSolver(self)
-                print("Enhanced IK solver initialized")
+                if self._ik_solver_type == "moveit":
+                    from ..moveit_ik_solver import MoveItIKSolver
+                    self._ik_solver = MoveItIKSolver(self)
+                    print("MoveIt IK solver initialized")
+                elif self._ik_solver_type == "enhanced":
+                    from ..ik_solver import EnhancedIKSolver
+                    self._ik_solver = EnhancedIKSolver(self)
+                    print("Enhanced IK solver initialized")
+                else:  # "basic" or any other value
+                    print("Using basic Baxter IK solver (no enhanced solver)")
+                    self._ik_solver = None
             except Exception as e:
-                print(f"Warning: Could not initialize enhanced IK solver: {e}")
+                print(f"Warning: Could not initialize {self._ik_solver_type} IK solver: {e}")
+                print("Falling back to basic Baxter IK")
                 self._ik_solver = None
 
             self._connected = True

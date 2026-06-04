@@ -7,7 +7,7 @@ echo "=========================================="
 echo ""
 
 # 设置API密钥
-export QWEN_API_KEY="sk-bd990626c84a4142b9581f13c5317522"
+export QWEN_API_KEY="sk-fdb3645b56b44749a3c4a3f86af2edb0"
 echo "✓ QWEN_API_KEY已设置"
 
 # 检查Bridge Server是否运行

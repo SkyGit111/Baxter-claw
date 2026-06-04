@@ -49,6 +49,12 @@ class BaxterClawPlugin:
         self.llm_provider = llm_provider.lower()
         self.llm_api_key = llm_api_key or self._get_llm_api_key()
 
+        # Debug: print API key being used
+        print(f"[Plugin DEBUG] LLM Provider: {self.llm_provider}")
+        print(f"[Plugin DEBUG] API Key (first 20 chars): {self.llm_api_key[:20] if self.llm_api_key else 'EMPTY'}...")
+        print(f"[Plugin DEBUG] API Key from env: {os.getenv('QWEN_API_KEY', 'NOT SET')[:20] if os.getenv('QWEN_API_KEY') else 'NOT SET'}...")
+        print()
+
         # Load skills.md
         self.skills = self._load_skills()
 
@@ -255,6 +261,16 @@ IMPORTANT: Return ONLY the JSON, no other text."""
                 return self._execute_close_gripper(params)
             elif skill_name == 'parallel_pick_and_place':
                 return self._execute_parallel_pick_and_place(params)
+            elif skill_name == 'sequential_handover':
+                return self._execute_sequential_handover(params)
+            elif skill_name == 'bimanual_hold_and_rotate':
+                return self._execute_bimanual_hold_and_rotate(params)
+            elif skill_name == 'bimanual_shape_ruler':
+                return self._execute_bimanual_shape_ruler(params)
+            elif skill_name == 'flatten_articulated_ruler':
+                return self._execute_flatten_articulated_ruler(params)
+            elif skill_name == 'sequential_relay_pick_place':
+                return self._execute_sequential_relay_pick_place(params)
             else:
                 return {
                     'success': False,
@@ -290,11 +306,24 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         result = response.json()
 
         if result.get('success'):
+            # CRITICAL: Extract the actual arm used from bridge server response
+            # The arm info might be at top level or nested in 'data'
+            actual_arm = result.get('arm')
+            if not actual_arm and 'data' in result:
+                actual_arm = result['data'].get('arm')
+
+            # Debug: print what we got
+            print(f"[Plugin DEBUG] Bridge response keys: {list(result.keys())}")
+            print(f"[Plugin DEBUG] Extracted arm: {actual_arm}")
+
+            if not actual_arm or actual_arm == 'unknown':
+                actual_arm = 'unknown'
+
             return {
                 'success': True,
                 'message': f"成功抓取 {object_name}",
                 'data': result,
-                'arm_used': result.get('arm', arm)
+                'arm_used': actual_arm  # Use actual arm from server
             }
         else:
             return {
@@ -307,9 +336,12 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         direction = params.get('direction', 'center')
         arm = params.get('arm', 'auto')
 
-        # Handle arm='auto': default to right
+        # CRITICAL: arm should NEVER be 'auto' here - it must be specified by caller
         if arm == 'auto':
-            arm = 'right'
+            return {
+                'success': False,
+                'message': "place_object_direction requires explicit arm parameter (cannot be 'auto'). Use pick_and_place skill instead."
+            }
 
         # Convert direction to position
         position = self._direction_to_position(direction)
@@ -342,10 +374,12 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         if not target_object_name:
             return {'success': False, 'message': 'Missing target_object_name parameter'}
 
-        # Handle arm='auto': default to right (or use arm from previous pick)
+        # CRITICAL: arm should NEVER be 'auto' here - it must be specified by caller
         if arm == 'auto':
-            arm = 'right'
-            print(f"[Auto-select] Defaulting to {arm} arm for place")
+            return {
+                'success': False,
+                'message': "place_object_relative requires explicit arm parameter (cannot be 'auto'). Use pick_and_place skill instead."
+            }
 
         response = self.client.post(
             f"{self.bridge_url}/primitives/place_by_name",
@@ -384,8 +418,15 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         if not pick_result['success']:
             return pick_result
 
-        # Get the arm that was actually used for pick
-        arm_used = pick_result.get('arm_used', arm if arm != 'auto' else 'right')
+        # CRITICAL: Get the arm that was actually used for pick
+        arm_used = pick_result.get('arm_used')
+        if not arm_used or arm_used == 'unknown':
+            return {
+                'success': False,
+                'message': f"Failed to determine which arm was used for pick. Bridge server did not return arm info."
+            }
+
+        print(f"[Skill] ✓ Picked with {arm_used} arm, will place with same arm")
 
         # Step 2: Place
         place_result = self._execute_place_object_direction({'direction': direction, 'arm': arm_used})
@@ -418,9 +459,15 @@ IMPORTANT: Return ONLY the JSON, no other text."""
         if not pick_result['success']:
             return pick_result
 
-        # Get the arm that was actually used for pick
-        arm_used = pick_result.get('arm_used', arm if arm != 'auto' else 'right')
-        print(f"[Skill] Using {arm_used} arm for place")
+        # CRITICAL: Get the arm that was actually used for pick
+        arm_used = pick_result.get('arm_used')
+        if not arm_used or arm_used == 'unknown':
+            return {
+                'success': False,
+                'message': f"Failed to determine which arm was used for pick. Bridge server did not return arm info."
+            }
+
+        print(f"[Skill] ✓ Picked with {arm_used} arm, will place with same arm")
 
         # Step 2: Place relative to target object (use same arm)
         place_result = self._execute_place_object_relative({
@@ -639,6 +686,564 @@ IMPORTANT: Return ONLY the JSON, no other text."""
             'pick_result': pick_result,
             'place_result': place_result
         }
+
+    def _execute_sequential_handover(self, params: Dict) -> Dict:
+        """Execute sequential handover: left arm picks A to center, then right arm picks A to B.
+
+        Strategy: Sequential execution with explicit handover at center position.
+        """
+        # ANSI color codes
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+        object_a = params.get('object_a')
+        object_b = params.get('object_b')
+        relative_position = params.get('relative_position', 'on_top')
+
+        if not object_a or not object_b:
+            return {'success': False, 'message': 'Missing object_a or object_b parameters'}
+
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Sequential Handover] Starting dual-arm relay task{RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"{BLUE}[Task]{RESET}")
+        print(f"  Object A: {object_a} (left side → center → object B)")
+        print(f"  Object B: {object_b} (final target)")
+        print(f"  Position: {relative_position}")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        # Phase 1: Left arm picks object A
+        print(f"{YELLOW}[Phase 1] Left arm picks {object_a}{RESET}")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/vision/pick_by_name",
+                json={
+                    'arm': 'left',
+                    'object_name': object_a,
+                    'use_d455': True
+                }
+            )
+            response.raise_for_status()
+            pick1_result = response.json()
+
+            if not pick1_result.get('success'):
+                print(f"{RED}[Phase 1] ✗ Failed to pick {object_a}: {pick1_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"左臂抓取失败: {pick1_result.get('message')}",
+                    'phase': 1
+                }
+
+            pick_position = pick1_result.get('position')
+
+            if not pick_position:
+                print(f"{RED}[Phase 1] ✗ No position returned from pick{RESET}")
+                return {
+                    'success': False,
+                    'message': f"左臂抓取未返回位置信息",
+                    'phase': 1
+                }
+
+            print(f"{GREEN}[Phase 1] ✓ Left arm picked {object_a} at {pick_position}{RESET}\n")
+
+        except Exception as e:
+            print(f"{RED}[Phase 1] ✗ Exception: {str(e)}{RESET}")
+            return {'success': False, 'message': f'Phase 1 error: {str(e)}', 'phase': 1}
+
+        # Phase 2: Left arm places object A at center (Y=0, Z=-0.16)
+        print(f"{YELLOW}[Phase 2] Left arm places {object_a} at center{RESET}")
+
+        try:
+            # Calculate center position: keep X, set Y=0, set Z=-0.16 (table surface)
+            center_position = [pick_position[0], 0.0, -0.16]
+            print(f"  Center position: {center_position}")
+
+            response = self.client.post(
+                f"{self.bridge_url}/primitives/place",
+                json={
+                    'arm': 'left',
+                    'position': center_position
+                }
+            )
+            response.raise_for_status()
+            place1_result = response.json()
+
+            if not place1_result.get('success'):
+                print(f"{RED}[Phase 2] ✗ Failed to place at center: {place1_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"左臂放置失败: {place1_result.get('message')}",
+                    'phase': 2
+                }
+
+            print(f"{GREEN}[Phase 2] ✓ Left arm placed {object_a} at center{RESET}\n")
+
+        except Exception as e:
+            print(f"{RED}[Phase 2] ✗ Exception: {str(e)}{RESET}")
+            return {'success': False, 'message': f'Phase 2 error: {str(e)}', 'phase': 2}
+
+        # Phase 3: Left arm returns to home
+        print(f"{YELLOW}[Phase 3] Left arm returns to home{RESET}")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/primitives/home",
+                json={'arm': 'left'}
+            )
+            response.raise_for_status()
+            home_result = response.json()
+
+            if not home_result.get('success'):
+                print(f"{RED}[Phase 3] ✗ Failed to return home: {home_result.get('message')}{RESET}")
+                # Continue anyway, this is not critical
+            else:
+                print(f"{GREEN}[Phase 3] ✓ Left arm at home position{RESET}\n")
+
+        except Exception as e:
+            print(f"{RED}[Phase 3] ✗ Exception: {str(e)}{RESET}")
+            # Continue anyway
+
+        # Phase 4: Right arm picks object A from center
+        print(f"{YELLOW}[Phase 4] Right arm picks {object_a} from center{RESET}")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/vision/pick_by_name",
+                json={
+                    'arm': 'right',
+                    'object_name': object_a,
+                    'use_d455': True
+                }
+            )
+            response.raise_for_status()
+            pick2_result = response.json()
+
+            if not pick2_result.get('success'):
+                print(f"{RED}[Phase 4] ✗ Failed to pick {object_a}: {pick2_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"右臂抓取失败: {pick2_result.get('message')}",
+                    'phase': 4
+                }
+
+            print(f"{GREEN}[Phase 4] ✓ Right arm picked {object_a}{RESET}\n")
+
+        except Exception as e:
+            print(f"{RED}[Phase 4] ✗ Exception: {str(e)}{RESET}")
+            return {'success': False, 'message': f'Phase 4 error: {str(e)}', 'phase': 4}
+
+        # Phase 5: Right arm places object A on object B
+        print(f"{YELLOW}[Phase 5] Right arm places {object_a} on {object_b}{RESET}")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/primitives/place_by_name",
+                json={
+                    'arm': 'right',
+                    'target_object_name': object_b,
+                    'relative_position': relative_position
+                }
+            )
+            response.raise_for_status()
+            place2_result = response.json()
+
+            if not place2_result.get('success'):
+                print(f"{RED}[Phase 5] ✗ Failed to place on {object_b}: {place2_result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"右臂放置失败: {place2_result.get('message')}",
+                    'phase': 5
+                }
+
+            print(f"{GREEN}[Phase 5] ✓ Right arm placed {object_a} on {object_b}{RESET}\n")
+
+        except Exception as e:
+            print(f"{RED}[Phase 5] ✗ Exception: {str(e)}{RESET}")
+            return {'success': False, 'message': f'Phase 5 error: {str(e)}', 'phase': 5}
+
+        # Summary
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Sequential Handover] Execution Summary{RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"Phase 1: ✓ Left arm picked {object_a}")
+        print(f"Phase 2: ✓ Left arm placed at center")
+        print(f"Phase 3: ✓ Left arm returned home")
+        print(f"Phase 4: ✓ Right arm picked {object_a}")
+        print(f"Phase 5: ✓ Right arm placed on {object_b}")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        return {
+            'success': True,
+            'message': f"成功完成顺序接力任务: {object_a} → 中间 → {object_b}",
+            'phases': {
+                'pick1': pick1_result,
+                'place1': place1_result,
+                'pick2': pick2_result,
+                'place2': place2_result
+            }
+        }
+
+    def _execute_bimanual_hold_and_rotate(self, params: Dict) -> Dict:
+        """Execute bimanual hold-and-rotate skill for articulated ruler object.
+
+        One arm holds a fixed segment while the other arm rotates an adjacent
+        segment around their shared hinge joint.
+        """
+        # ANSI color codes
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+        fixed_arm = params.get('fixed_arm', 'left')
+        moving_arm = params.get('moving_arm', 'right')
+        fixed_segment_color = params.get('fixed_segment_color')
+        moving_segment_color = params.get('moving_segment_color')
+        angle_degrees = params.get('angle_degrees')
+        direction = params.get('direction')
+        segment_length = params.get('segment_length', 0.15)
+
+        # Validate required parameters
+        if not fixed_segment_color:
+            return {'success': False, 'message': 'Missing fixed_segment_color parameter'}
+
+        if not moving_segment_color:
+            return {'success': False, 'message': 'Missing moving_segment_color parameter'}
+
+        if angle_degrees is None:
+            return {'success': False, 'message': 'Missing angle_degrees parameter'}
+
+        if not direction:
+            return {'success': False, 'message': 'Missing direction parameter (clockwise/counterclockwise)'}
+
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Hold and Rotate] Starting bimanual articulated object manipulation{RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"{BLUE}[Task]{RESET}")
+        print(f"  Fixed arm: {fixed_arm}, segment: {fixed_segment_color}")
+        print(f"  Moving arm: {moving_arm}, segment: {moving_segment_color}")
+        print(f"  Rotation: {angle_degrees}° {direction}")
+        print(f"  Segment length: {segment_length}m")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/dualarm/hold_and_rotate",
+                json={
+                    'fixed_arm': fixed_arm,
+                    'moving_arm': moving_arm,
+                    'fixed_segment_color': fixed_segment_color,
+                    'moving_segment_color': moving_segment_color,
+                    'angle_degrees': angle_degrees,
+                    'direction': direction,
+                    'fixed_grasp_name': params.get('fixed_grasp_name'),
+                    'moving_grasp_name': params.get('moving_grasp_name'),
+                    'segment_length': segment_length,
+                    'use_d455': True,
+                    'approach_height': params.get('approach_height', 0.10),
+                    'speed': params.get('speed', 0.10),
+                    'waypoint_angle_step_degrees': params.get('waypoint_angle_step_degrees', 10.0),
+                    'keep_z_constant': params.get('keep_z_constant', True),
+                    'dry_run': params.get('dry_run', False)
+                },
+                timeout=300.0  # Long timeout for complex task
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get('success'):
+                print(f"{RED}[Hold and Rotate] ✗ Failed: {result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"旋转任务失败: {result.get('message')}",
+                    'failed_stage': result.get('failed_stage'),
+                    'details': result
+                }
+
+            # Success
+            print(f"\n{GREEN}{'='*70}{RESET}")
+            print(f"{GREEN}[Hold and Rotate] ✓ Task Complete{RESET}")
+            print(f"{GREEN}{'='*70}{RESET}")
+            print(f"  Rotated {moving_segment_color} segment {angle_degrees}° {direction}")
+            print(f"  Hinge position: {result.get('hinge_position')}")
+            print(f"  Waypoints executed: {len(result.get('waypoints', []))}")
+            if result.get('warnings'):
+                print(f"{YELLOW}  Warnings: {len(result.get('warnings'))}{RESET}")
+                for warning in result.get('warnings', []):
+                    print(f"    - {warning}")
+            print(f"{GREEN}{'='*70}{RESET}\n")
+
+            return {
+                'success': True,
+                'message': f"成功旋转 {moving_segment_color} 尺段 {angle_degrees}° {direction}",
+                'details': result
+            }
+
+        except Exception as e:
+            print(f"{RED}[Hold and Rotate] ✗ Exception: {str(e)}{RESET}")
+            return {
+                'success': False,
+                'message': f'旋转任务异常: {str(e)}'
+            }
+
+    def _execute_bimanual_shape_ruler(self, params: Dict) -> Dict:
+        """Execute bimanual shape ruler skill (push mode).
+
+        Adjusts articulated ruler configuration from S-shape to L-shape.
+        Moving arm pushes (does NOT grasp) the blue segment.
+        """
+        # ANSI color codes
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+        fixed_arm = params.get('fixed_arm', 'left')
+        moving_arm = params.get('moving_arm', 'right')
+        target_shape = params.get('target_shape', 'L')
+        l_shape_blue_turn_direction = params.get('l_shape_blue_turn_direction', 'clockwise')
+        config_path = params.get('config_path', 'config/ruler_task.yaml')
+        dry_run = params.get('dry_run', False)
+
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Shape Ruler] Starting bimanual shape ruler task (PUSH MODE){RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"{BLUE}[Task]{RESET}")
+        print(f"  Fixed arm: {fixed_arm}")
+        print(f"  Moving arm: {moving_arm} (PUSH mode - no gripper close)")
+        print(f"  Target shape: {target_shape}")
+        print(f"  Blue turn direction: {l_shape_blue_turn_direction}")
+        print(f"  Config: {config_path}")
+        print(f"  Dry run: {dry_run}")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/dualarm/shape_ruler",
+                json={
+                    'fixed_arm': fixed_arm,
+                    'moving_arm': moving_arm,
+                    'target_shape': target_shape,
+                    'l_shape_blue_turn_direction': l_shape_blue_turn_direction,
+                    'config_path': config_path,
+                    'dry_run': dry_run
+                },
+                timeout=300.0
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get('success'):
+                print(f"{RED}[Shape Ruler] ✗ Failed: {result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"形状调整任务失败: {result.get('message')}",
+                    'failed_stage': result.get('failed_stage'),
+                    'details': result
+                }
+
+            # Success
+            print(f"\n{GREEN}{'='*70}{RESET}")
+            print(f"{GREEN}[Shape Ruler] ✓ Task Complete{RESET}")
+            print(f"{GREEN}{'='*70}{RESET}")
+
+            if result.get('dry_run'):
+                print(f"  Dry run complete - plan computed successfully")
+                print(f"  Model waypoints: {len(result.get('all_model_waypoints', []))}")
+                print(f"  Execution waypoints: {len(result.get('execution_waypoints', []))}")
+                print(f"  Push waypoints: {len(result.get('push_execution_waypoints', []))}")
+            else:
+                print(f"  Successfully adjusted ruler to {target_shape}-shape")
+                print(f"  Push mode: moving arm did NOT close gripper")
+                print(f"  L1 (G-O): {result.get('L1', 0):.3f}m")
+                print(f"  L2 (O-B): {result.get('L2', 0):.3f}m")
+
+            if result.get('warnings'):
+                print(f"{YELLOW}  Warnings: {len(result.get('warnings'))}{RESET}")
+                for warning in result.get('warnings', []):
+                    print(f"    - {warning}")
+
+            print(f"{GREEN}{'='*70}{RESET}\n")
+
+            return {
+                'success': True,
+                'message': f"成功调整尺子形状为 {target_shape} 型 (推动模式)",
+                'details': result
+            }
+
+        except Exception as e:
+            print(f"{RED}[Shape Ruler] ✗ Exception: {str(e)}{RESET}")
+            return {
+                'success': False,
+                'message': f'形状调整任务异常: {str(e)}'
+            }
+
+    def _execute_flatten_articulated_ruler(self, params: Dict) -> Dict:
+        """Execute flatten articulated ruler skill (dual-arm pulling).
+
+        Flattens an S-shaped ruler by pulling both endpoints apart.
+        Both arms grasp and pull synchronously.
+        """
+        # ANSI color codes
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+        config_path = params.get('config_path', 'config/flatten_ruler_task.yaml')
+        dry_run = params.get('dry_run', False)
+
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Flatten Ruler] Starting flatten articulated ruler task{RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"{BLUE}[Task]{RESET}")
+        print(f"  Config: {config_path}")
+        print(f"  Dry run: {dry_run}")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/primitives/flatten_ruler",
+                params={
+                    'config_path': config_path,
+                    'dry_run': dry_run
+                },
+                timeout=300.0
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get('success'):
+                print(f"{RED}[Flatten Ruler] ✗ Failed: {result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"拉直尺子任务失败: {result.get('message')}",
+                    'failed_stage': result.get('failed_stage'),
+                    'details': result
+                }
+
+            # Success
+            print(f"\n{GREEN}{'='*70}{RESET}")
+            print(f"{GREEN}[Flatten Ruler] ✓ Task Complete{RESET}")
+            print(f"{GREEN}{'='*70}{RESET}")
+
+            if result.get('dry_run'):
+                print(f"  Dry run complete - plan computed successfully")
+                print(f"  Waypoints: {result.get('num_waypoints', 0)}")
+                print(f"  Initial separation: {result.get('initial_separation', 0):.3f}m")
+                print(f"  Final separation: {result.get('final_separation', 0):.3f}m")
+            else:
+                print(f"  Successfully flattened ruler")
+                print(f"  Initial separation: {result.get('initial_separation', 0):.3f}m")
+                print(f"  Final separation: {result.get('final_separation', 0):.3f}m")
+                print(f"  Pull distance: {result.get('pull_distance', 0):.3f}m")
+                print(f"  Waypoints executed: {result.get('num_waypoints', 0)}")
+
+            print(f"{GREEN}{'='*70}{RESET}\n")
+
+            return {
+                'success': True,
+                'message': f"成功拉直尺子 (双臂协同拉动)",
+                'details': result
+            }
+
+        except Exception as e:
+            print(f"{RED}[Flatten Ruler] ✗ Exception: {str(e)}{RESET}")
+            return {
+                'success': False,
+                'message': f'拉直尺子任务异常: {str(e)}'
+            }
+
+    def _execute_sequential_relay_pick_place(self, params: Dict) -> Dict:
+        """Execute sequential relay pick-place skill.
+
+        Left arm picks from left and places at center, then right arm picks from center and places at right.
+        """
+        # ANSI color codes
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        RESET = '\033[0m'
+
+        object_name = params.get('object_name', '')
+        final_target_name = params.get('final_target_name')
+        final_relative_position = params.get('final_relative_position', 'next_to')
+        relay_offset_y = params.get('relay_offset_y', 0.0)
+        final_offset_x = params.get('final_offset_x', 0.20)
+
+        if not object_name:
+            return {'success': False, 'message': 'Missing object_name parameter'}
+
+        print(f"\n{CYAN}{'='*70}{RESET}")
+        print(f"{CYAN}[Sequential Relay] Starting relay pick-place{RESET}")
+        print(f"{CYAN}{'='*70}{RESET}")
+        print(f"{BLUE}[Task]{RESET}")
+        print(f"  Object: {object_name}")
+        print(f"  Final target: {final_target_name or 'offset-based'}")
+        print(f"  Final position: {final_relative_position}")
+        print(f"  Relay Y offset: {relay_offset_y}m")
+        print(f"  Final X offset: {final_offset_x}m")
+        print(f"{CYAN}{'='*70}{RESET}\n")
+
+        try:
+            response = self.client.post(
+                f"{self.bridge_url}/dualarm/sequential_relay",
+                params={
+                    'object_name': object_name,
+                    'final_target_name': final_target_name,
+                    'final_relative_position': final_relative_position,
+                    'relay_offset_y': relay_offset_y,
+                    'final_offset_x': final_offset_x
+                },
+                timeout=300.0
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get('success'):
+                print(f"{RED}[Sequential Relay] ✗ Failed: {result.get('message')}{RESET}")
+                return {
+                    'success': False,
+                    'message': f"接力任务失败: {result.get('message')}",
+                    'phase': result.get('phase'),
+                    'details': result
+                }
+
+            # Success
+            print(f"\n{GREEN}{'='*70}{RESET}")
+            print(f"{GREEN}[Sequential Relay] ✓ Task Complete{RESET}")
+            print(f"{GREEN}{'='*70}{RESET}")
+            print(f"  Successfully relayed {object_name}")
+            print(f"  Left pick: {result.get('left_pick_position')}")
+            print(f"  Relay: {result.get('relay_position')}")
+            print(f"  Final: {result.get('final_position')}")
+            print(f"{GREEN}{'='*70}{RESET}\n")
+
+            return {
+                'success': True,
+                'message': f"成功接力传递 {object_name} (左臂→中间→右臂)",
+                'details': result
+            }
+
+        except Exception as e:
+            print(f"{RED}[Sequential Relay] ✗ Exception: {str(e)}{RESET}")
+            return {
+                'success': False,
+                'message': f'接力任务异常: {str(e)}'
+            }
 
     # ============================================================
     # OLD: Intent-based architecture (kept for reference)

@@ -136,6 +136,7 @@ class VisionResponse(BaseModel):
     """Response from vision operations."""
     success: bool
     message: str
+    arm: Optional[str] = None  # Which arm was used (for pick operations)
     found: Optional[bool] = None  # Whether object was found
     object_name: Optional[str] = None
     position: Optional[List[float]] = None
@@ -194,5 +195,184 @@ class DualArmResponse(BaseModel):
     left_position: Optional[List[float]] = None
     right_position: Optional[List[float]] = None
     handover_position: Optional[List[float]] = None
+
+
+class BimanualHoldAndRotateRequest(BaseModel):
+    """Request to hold one ruler segment fixed while rotating another segment around their hinge."""
+    fixed_arm: Literal["left", "right"] = Field(
+        default="left",
+        description="Arm that holds the fixed segment"
+    )
+    moving_arm: Literal["left", "right"] = Field(
+        default="right",
+        description="Arm that rotates the moving segment"
+    )
+    fixed_segment_color: str = Field(
+        ...,
+        description="Color of the segment to be held fixed (e.g., 'blue', 'yellow', 'green')"
+    )
+    moving_segment_color: str = Field(
+        ...,
+        description="Color of the segment to be rotated (e.g., 'blue', 'yellow', 'green')"
+    )
+    fixed_grasp_name: Optional[str] = Field(
+        default=None,
+        description="Optional specific description of fixed grasp point"
+    )
+    moving_grasp_name: Optional[str] = Field(
+        default=None,
+        description="Optional specific description of moving grasp point"
+    )
+    angle_degrees: float = Field(
+        ...,
+        description="Rotation angle in degrees (e.g., 30, 60, 90)"
+    )
+    direction: Literal["clockwise", "counterclockwise"] = Field(
+        ...,
+        description="Rotation direction: 'clockwise' or 'counterclockwise'"
+    )
+    segment_length: float = Field(
+        default=0.15,
+        description="Length of each ruler segment in meters (default 15cm)"
+    )
+    use_d455: bool = Field(
+        default=True,
+        description="Use D455 depth camera for localization"
+    )
+    approach_height: float = Field(
+        default=0.10,
+        description="Height offset for pre-grasp poses"
+    )
+    speed: float = Field(
+        default=0.10,
+        description="Motion speed ratio (0-1), kept low for safety"
+    )
+    waypoint_angle_step_degrees: float = Field(
+        default=10.0,
+        description="Angle step between waypoints in degrees"
+    )
+    keep_z_constant: bool = Field(
+        default=True,
+        description="Keep Z coordinate constant during rotation (planar motion)"
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If True, only compute and return plan without executing"
+    )
+
+
+class HoldAndRotateResponse(BaseModel):
+    """Response from bimanual hold and rotate operation."""
+    success: bool
+    message: str
+    fixed_arm: Optional[str] = None
+    moving_arm: Optional[str] = None
+    fixed_segment_color: Optional[str] = None
+    moving_segment_color: Optional[str] = None
+    fixed_grasp_position: Optional[List[float]] = None
+    moving_grasp_position: Optional[List[float]] = None
+    fixed_segment_midpoint: Optional[List[float]] = None
+    moving_segment_midpoint: Optional[List[float]] = None
+    hinge_observed_position: Optional[List[float]] = None
+    candidate_hinges: Optional[List[List[float]]] = None
+    hinge_position: Optional[List[float]] = None
+    hinge_selection_reason: Optional[str] = None
+    target_position: Optional[List[float]] = None
+    waypoints: Optional[List[List[float]]] = None
+    angle_degrees: Optional[float] = None
+    direction: Optional[str] = None
+    failed_stage: Optional[str] = None
+    failed_waypoint_index: Optional[int] = None
+    warnings: Optional[List[str]] = None
+    dry_run: Optional[bool] = None
+
+
+
+
+class BimanualShapeRulerRequest(BaseModel):
+    """Request for bimanual shape ruler task (push mode)."""
+    fixed_arm: Literal["left", "right"] = Field(
+        default="left",
+        description="Arm that holds the fixed segment"
+    )
+    moving_arm: Literal["left", "right"] = Field(
+        default="right",
+        description="Arm that pushes the moving segment"
+    )
+    target_shape: Literal["L"] = Field(
+        default="L",
+        description="Target shape configuration"
+    )
+    l_shape_blue_turn_direction: Literal["clockwise", "counterclockwise"] = Field(
+        default="clockwise",
+        description="Blue segment turn direction for L-shape"
+    )
+    config_path: Optional[str] = Field(
+        default="config/ruler_task.yaml",
+        description="Path to ruler task configuration file"
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If True, only compute plan without executing"
+    )
+
+
+class ShapeRulerResponse(BaseModel):
+    """Response from bimanual shape ruler task."""
+    success: bool
+    message: str
+    
+    # Arms and mode
+    fixed_arm: Optional[str] = None
+    moving_arm: Optional[str] = None
+    push_mode: bool = True
+    moving_gripper_close: bool = False
+    
+    # Raw VLM localization results
+    raw_red_grasp_position: Optional[List[float]] = None
+    raw_blue_push_position: Optional[List[float]] = None
+    raw_green_joint_position: Optional[List[float]] = None
+    raw_orange_joint_position: Optional[List[float]] = None
+    
+    # Motion coordinates (XY from raw, Z fixed)
+    motion_red_grasp_position: Optional[List[float]] = None
+    motion_blue_push_position: Optional[List[float]] = None
+    motion_green_joint_position: Optional[List[float]] = None
+    motion_orange_joint_position: Optional[List[float]] = None
+    motion_z: Optional[float] = None
+    approach_z: Optional[float] = None
+    
+    # Geometry
+    L1: Optional[float] = None  # G-O length
+    L2: Optional[float] = None  # O-B length
+    O_target: Optional[List[float]] = None
+    B_target: Optional[List[float]] = None
+    target_shape: Optional[str] = None
+    red_yellow_target_angle_deg: Optional[float] = None
+    blue_yellow_target_angle_deg: Optional[float] = None
+    
+    # Push configuration
+    push_contact_offset_xy: Optional[List[float]] = None
+    
+    # Waypoints (distinguish model and execution)
+    all_model_waypoints: Optional[List[List[float]]] = None
+    execution_waypoints: Optional[List[List[float]]] = None
+    push_execution_waypoints: Optional[List[List[float]]] = None
+    waypoint_yaws: Optional[List[float]] = None
+    skip_first_waypoint: Optional[bool] = None
+    
+    # Joint angle validation
+    green_joint_angle_check_results: Optional[List[Dict]] = None
+    orange_joint_angle_check_results: Optional[List[Dict]] = None
+    joint_limit_violation: Optional[bool] = None
+    
+    # Pose validation
+    pose_validation_results: Optional[List[Dict]] = None
+    
+    # Execution details
+    failed_stage: Optional[str] = None
+    failed_waypoint_index: Optional[int] = None
+    warnings: Optional[List[str]] = None
+    dry_run: Optional[bool] = None
 
 

@@ -22,7 +22,11 @@ import base64
 app = Flask(__name__)
 
 # Get Qwen API key from environment or config
-qwen_api_key = os.getenv('QWEN_API_KEY', 'sk-bd990626c84a4142b9581f13c5317522')
+qwen_api_key = os.getenv('QWEN_API_KEY', 'sk-fdb3645b56b44749a3c4a3f86af2edb0')
+
+print(f"\n[DEBUG] 使用的 API key: {qwen_api_key[:20]}...")
+print(f"[DEBUG] 环境变量 QWEN_API_KEY: {os.getenv('QWEN_API_KEY', 'NOT SET')[:20] if os.getenv('QWEN_API_KEY') else 'NOT SET'}...")
+print()
 
 # Initialize plugin with LLM support
 plugin = BaxterClawPlugin(

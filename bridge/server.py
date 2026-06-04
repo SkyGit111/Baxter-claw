@@ -33,6 +33,10 @@ from .models import (
     HandoverRequest,
     SynchronizedMoveRequest,
     DualArmResponse,
+    BimanualHoldAndRotateRequest,
+    HoldAndRotateResponse,
+    BimanualShapeRulerRequest,
+    ShapeRulerResponse,
 )
 from .arm_manager import ArmManager
 
@@ -590,6 +594,225 @@ async def parallel_place_two(req: Dict) -> DualArmResponse:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Parallel place failed: {str(e)}")
+
+
+@app.post("/dualarm/sequential_relay")
+async def sequential_relay_pick_place_endpoint(
+    object_name: str,
+    final_target_name: Optional[str] = None,
+    final_relative_position: str = "next_to",
+    relay_offset_y: float = 0.0,
+    final_offset_x: float = 0.20,
+    approach_height: float = 0.1,
+    speed: float = 0.3
+) -> Dict:
+    """Sequential relay: left arm picks and places at center, then right arm picks and places at right.
+
+    Scenario: Object is on the left side. Left arm picks it and places at center (y=0),
+    then retracts to home. Right arm then picks from center and places at right side.
+
+    Args:
+        object_name: Name of the object to relay
+        final_target_name: Optional reference object for final placement
+        final_relative_position: Relative position to final target
+        relay_offset_y: Y offset for relay position (default 0.0 = center)
+        final_offset_x: X offset for final position from relay (default 0.20m)
+        approach_height: Height offset for approach movements
+        speed: Motion speed
+
+    Returns:
+        Dict with success status and execution details
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        result = await manager.primitives.sequential_relay_pick_place(
+            object_name=object_name,
+            final_target_name=final_target_name,
+            final_relative_position=final_relative_position,
+            relay_offset_y=relay_offset_y,
+            final_offset_x=final_offset_x,
+            approach_height=approach_height,
+            speed=speed
+        )
+
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('message', 'Sequential relay failed'))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Sequential relay failed: {str(e)}")
+
+
+@app.post("/dualarm/hold_and_rotate")
+async def hold_and_rotate(req: BimanualHoldAndRotateRequest) -> HoldAndRotateResponse:
+    """Execute bimanual hold-and-rotate task on articulated ruler object.
+
+    One arm holds a fixed segment while the other arm rotates an adjacent
+    segment around their shared hinge joint.
+
+    This endpoint:
+    1. Locates all necessary points using VLM before any motion
+    2. Computes hinge center from geometry + VLM observation
+    3. Plans circular arc trajectory
+    4. Validates all waypoints
+    5. Executes: fixed arm grasps and holds, moving arm grasps and rotates
+
+    Args:
+        req: BimanualHoldAndRotateRequest with segment colors, rotation params
+
+    Returns:
+        HoldAndRotateResponse with full execution details and computed plan
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        result = await manager.primitives.bimanual_hold_and_rotate(
+            fixed_arm=req.fixed_arm,
+            moving_arm=req.moving_arm,
+            fixed_segment_color=req.fixed_segment_color,
+            moving_segment_color=req.moving_segment_color,
+            angle_degrees=req.angle_degrees,
+            direction=req.direction,
+            fixed_grasp_name=req.fixed_grasp_name,
+            moving_grasp_name=req.moving_grasp_name,
+            segment_length=req.segment_length,
+            use_d455=req.use_d455,
+            approach_height=req.approach_height,
+            speed=req.speed,
+            waypoint_angle_step_degrees=req.waypoint_angle_step_degrees,
+            keep_z_constant=req.keep_z_constant,
+            dry_run=req.dry_run
+        )
+
+        if not result['success']:
+            raise HTTPException(
+                status_code=400,
+                detail=result.get('message', 'Hold and rotate failed')
+            )
+
+        return HoldAndRotateResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hold and rotate failed: {str(e)}"
+        )
+
+
+@app.post("/dualarm/shape_ruler")
+async def shape_ruler(req: BimanualShapeRulerRequest) -> ShapeRulerResponse:
+    """Execute bimanual shape ruler task in PUSH MODE.
+
+    One arm holds the fixed segment while the other arm pushes (not grasps)
+    the moving segment to adjust the ruler configuration from S-shape to L-shape.
+
+    This endpoint:
+    1. Loads configuration from ruler_task.yaml
+    2. Locates all points (R, G, O, B) using VLM before any motion
+    3. Converts to motion coordinates (fixed Z)
+    4. Calculates L-shape target configuration
+    5. Plans two-link waypoints with joint angle validation
+    6. Validates all execution poses (safety + IK)
+    7. Executes: fixed arm grasps and holds, moving arm pushes along waypoints
+
+    Key features:
+    - Push mode: moving arm does NOT close gripper
+    - Fixed motion Z coordinate for all movements
+    - Two-link angle interpolation (not simple arc)
+    - Physical joint angle limits validation
+    - Comprehensive pose validation before execution
+
+    Args:
+        req: BimanualShapeRulerRequest with task parameters
+
+    Returns:
+        ShapeRulerResponse with full execution details and computed plan
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        result = await manager.primitives.bimanual_shape_ruler(
+            fixed_arm=req.fixed_arm,
+            moving_arm=req.moving_arm,
+            target_shape=req.target_shape,
+            l_shape_blue_turn_direction=req.l_shape_blue_turn_direction,
+            config_path=req.config_path,
+            dry_run=req.dry_run
+        )
+
+        if not result['success']:
+            raise HTTPException(
+                status_code=400,
+                detail=result.get('message', 'Shape ruler task failed')
+            )
+
+        return ShapeRulerResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Shape ruler task failed: {str(e)}"
+        )
+
+
+@app.post("/primitives/flatten_ruler")
+async def flatten_ruler_endpoint(
+    config_path: str = "config/flatten_ruler_task.yaml",
+    dry_run: bool = False
+) -> Dict:
+    """Flatten an S-shaped articulated ruler by pulling both endpoints apart.
+
+    This is a dual-arm coordinated task that:
+    1. Locates red endpoint (purple tape) and blue endpoint (green tape) via VLM
+    2. Grasps both endpoints with left and right arms
+    3. Pulls the endpoints apart synchronously to straighten the ruler
+    4. Interpolates both position and orientation during pulling
+
+    Key features:
+    - Dual-arm synchronized motion
+    - Position and orientation interpolation
+    - Yaw rotation follows pulling direction
+    - Comprehensive validation before execution
+    - Detailed logging of all waypoints
+
+    Args:
+        config_path: Path to flatten ruler task configuration
+        dry_run: If True, only plan without executing
+
+    Returns:
+        Dict with task result including trajectories and separation distances
+    """
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Manager not initialized")
+
+    try:
+        result = await manager.primitives.flatten_articulated_ruler(
+            config_path=config_path,
+            dry_run=dry_run
+        )
+
+        if not result['success']:
+            raise HTTPException(
+                status_code=400,
+                detail=result.get('message', 'Flatten ruler task failed')
+            )
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Flatten ruler task failed: {str(e)}"
+        )
 
 
 def main():

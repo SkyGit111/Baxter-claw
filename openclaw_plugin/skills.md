@@ -246,6 +246,260 @@
 
 ---
 
+## Skill 12: sequential_relay_pick_place
+**Description**: Sequential relay: left arm picks object from left side and places at center, then right arm picks from center and places at right side
+
+**When to use**:
+- User asks to move an object from left to right using both arms
+- User mentions relay, handover, or sequential transfer from left to right
+- Object is on the left side and needs to be moved to the right side
+- Examples:
+  - "把蓝色小方块从左边移到右边"
+  - "用左右臂接力把物体从左侧传到右侧"
+  - "relay the blue cube from left to right"
+  - "transfer the object from left side to right side using both arms"
+
+**Parameters**:
+- `object_name` (string, required): Name of the object to relay (e.g., "蓝色小方块", "blue cube")
+- `final_target_name` (string, optional): Reference object for final placement (if None, uses offset)
+- `final_relative_position` (string, optional): Where to place relative to final target ("next_to", "on_top", "behind", "in_front"), default: "next_to"
+- `relay_offset_y` (float, optional): Y offset for relay position, default: 0.0 (center)
+- `final_offset_x` (float, optional): X offset for final position from relay, default: 0.20 (20cm to the right)
+
+**Execution**:
+1. Left arm picks object from left side
+2. Left arm places object at center (Y=0, relay position)
+3. Left arm returns to home position
+4. Right arm picks object from center
+5. Right arm places object at right side (final position)
+6. Right arm returns to home position
+
+**Success condition**: Object successfully relayed from left side to right side via center handover
+
+**Example**:
+```json
+{
+  "skill": "sequential_relay_pick_place",
+  "object_name": "蓝色小方块",
+  "final_offset_x": 0.25
+}
+```
+
+**Important Notes**:
+- Left arm picks from wherever the object is located (typically left side)
+- Relay position is at center (Y=0) with same X and Z as pick position
+- Final position is offset from relay position (default 20cm to the right)
+- If `final_target_name` is provided, places relative to that target instead of using offset
+- Both arms return to home after their respective tasks
+
+---
+
+## Skill 13: sequential_handover
+**Description**: Left arm picks object A and places it at center, then right arm picks object A and places it on object B (sequential dual-arm handover)
+
+**When to use**:
+- User asks for a handover or relay task between arms with a specific target object
+- User mentions "依次", "先...再...", "传递", "接力", "sequentially", "then"
+- Examples:
+  - "先用左手抓取蓝色小方块放到中间，再用右手抓取它放到红色小方块上"
+  - "left arm picks blue cube to center, then right arm picks it and places on red cube"
+
+**Parameters**:
+- `object_a` (string, required): Object to be picked by left arm first (e.g., "蓝色小方块")
+- `object_b` (string, required): Final target object for placement (e.g., "红色小方块")
+- `relative_position` (string, optional): Where to place on object B ("on_top", "next_to", "behind", "in_front"), default: "on_top"
+
+**Execution**:
+1. Left arm picks object_a
+2. Left arm places object_a at center position (Y=0)
+3. Left arm returns to home position
+4. Right arm picks object_a from center
+5. Right arm places object_a relative to object_b
+6. If all steps successful, skill is DONE
+
+**Success condition**: Object A successfully transferred from left side to object B via center handover
+
+**Example**:
+```json
+{
+  "skill": "sequential_handover",
+  "object_a": "蓝色小方块",
+  "object_b": "红色小方块",
+  "relative_position": "on_top"
+}
+```
+
+---
+
+## Skill 14: bimanual_hold_and_rotate
+**Description**: Hold one ruler segment fixed with one arm while rotating an adjacent segment around their shared hinge joint with the other arm
+
+**When to use**:
+- User asks to hold/fix one segment and rotate/turn another segment
+- User mentions rotating around a joint/hinge
+- User specifies rotation angle (30°, 60°, 90°) and direction (clockwise/counterclockwise)
+- Examples:
+  - "用左手固定蓝色尺段，用右手把黄色尺段顺时针旋转90度"
+  - "固定蓝色部分，把黄色部分逆时针旋转60度"
+  - "hold blue segment with left arm, rotate yellow segment 90 degrees clockwise with right arm"
+
+**Parameters**:
+- `fixed_arm` (string, optional): Arm to hold fixed segment ("left" or "right"), default: "left"
+- `moving_arm` (string, optional): Arm to rotate moving segment ("left" or "right"), default: "right"
+- `fixed_segment_color` (string, required): Color of segment to hold fixed (e.g., "blue", "yellow", "green")
+- `moving_segment_color` (string, required): Color of segment to rotate (e.g., "blue", "yellow", "green")
+- `angle_degrees` (number, required): Rotation angle in degrees (e.g., 30, 60, 90)
+- `direction` (string, required): Rotation direction ("clockwise" or "counterclockwise")
+- `segment_length` (number, optional): Length of each segment in meters, default: 0.15
+
+**Execution**:
+1. Locate all points using VLM before any motion:
+   - Fixed segment grasp point
+   - Moving segment grasp point
+   - Fixed segment midpoint
+   - Moving segment midpoint
+   - Hinge joint between the two specified segments
+2. Compute hinge center from geometry and VLM observation
+3. Plan circular arc trajectory for rotation
+4. Validate all waypoints are safe and reachable
+5. Fixed arm grasps and holds fixed segment
+6. Moving arm grasps moving segment
+7. Moving arm follows arc trajectory to rotate segment
+8. Release both arms
+
+**Success condition**: Moving segment successfully rotated by specified angle around hinge
+
+**Example**:
+```json
+{
+  "skill": "bimanual_hold_and_rotate",
+  "fixed_arm": "left",
+  "moving_arm": "right",
+  "fixed_segment_color": "blue",
+  "moving_segment_color": "yellow",
+  "angle_degrees": 90,
+  "direction": "clockwise",
+  "segment_length": 0.15
+}
+```
+
+**Important Notes**:
+- The two segments must be adjacent (share a hinge joint)
+- For 3-segment rulers with 2 joints, specify which two adjacent segments to use via their colors
+- System will locate the hinge between the specified colored segments
+- Rotation happens in XY plane (table surface)
+- All localization happens before robot motion begins
+
+---
+
+## Skill 15: bimanual_shape_ruler
+**Description**: Adjust articulated ruler configuration from S-shape to L-shape using bimanual push mode
+
+**When to use**:
+- User asks to adjust ruler shape or configuration
+- User mentions changing from S-shape to L-shape
+- User asks to straighten or adjust the articulated ruler
+- Examples:
+  - "把尺子从S型调整成L型"
+  - "调整尺子构型"
+  - "adjust ruler to L-shape"
+  - "straighten the ruler segments"
+
+**Parameters**:
+- `fixed_arm` (string, optional): Arm to hold fixed segment ("left" or "right"), default: "left"
+- `moving_arm` (string, optional): Arm to push moving segment ("left" or "right"), default: "right"
+- `target_shape` (string, optional): Target shape configuration ("L"), default: "L"
+- `l_shape_blue_turn_direction` (string, optional): Blue segment turn direction ("clockwise" or "counterclockwise"), default: "clockwise"
+- `config_path` (string, optional): Path to ruler task configuration, default: "config/ruler_task.yaml"
+- `dry_run` (boolean, optional): If true, only compute plan without executing, default: false
+
+**Execution**:
+1. Load configuration from ruler_task.yaml
+2. Locate all points using VLM (red grasp, green joint, orange joint, blue push)
+3. Convert to motion coordinates (fixed Z = -0.16m)
+4. Calculate L-shape target configuration using two-link kinematics
+5. Plan waypoints using angle interpolation with joint limit validation
+6. Validate all poses (safety + IK)
+7. Fixed arm grasps and holds red segment
+8. Moving arm pushes (NOT grasps) blue segment along waypoints
+9. Release both arms
+
+**Success condition**: Ruler successfully adjusted to L-shape configuration
+
+**Example**:
+```json
+{
+  "skill": "bimanual_shape_ruler",
+  "fixed_arm": "left",
+  "moving_arm": "right",
+  "target_shape": "L",
+  "l_shape_blue_turn_direction": "clockwise",
+  "dry_run": false
+}
+```
+
+**Important Notes**:
+- **Push mode**: Moving arm does NOT close gripper, only pushes
+- Fixed motion Z coordinate (-0.16m) for all movements
+- Two-link angle interpolation (not simple circular arc)
+- Physical joint angle limits are validated
+- All localization happens before robot motion
+- Configuration file defines segment colors and joint positions
+- Green joint (red-yellow) is approximately fixed when red segment is held
+- Orange joint (yellow-blue) moves during adjustment
+
+---
+
+## Skill 16: flatten_articulated_ruler
+**Description**: Flatten an S-shaped articulated ruler by pulling both endpoints apart with dual-arm coordination
+
+**When to use**:
+- User asks to flatten, straighten, or pull apart the ruler
+- User mentions pulling the ruler straight
+- User asks to unfold or extend the ruler
+- Examples:
+  - "把尺子拉直"
+  - "将折叠的尺子向两边拉开"
+  - "flatten the ruler"
+  - "pull the ruler straight"
+  - "straighten the folded ruler"
+
+**Parameters**:
+- `config_path` (string, optional): Path to flatten ruler task configuration, default: "config/flatten_ruler_task.yaml"
+- `dry_run` (boolean, optional): If true, only compute plan without executing, default: false
+
+**Execution**:
+1. Load configuration from flatten_ruler_task.yaml
+2. Locate red endpoint (purple tape) and blue endpoint (green tape) using VLM
+3. Calculate initial and final positions with pulling distance
+4. Generate synchronized trajectories with position and orientation interpolation
+5. Validate all poses (workspace + IK)
+6. Both arms grasp their respective endpoints
+7. Execute synchronized pulling motion with yaw interpolation
+8. Release both endpoints
+
+**Success condition**: Ruler successfully flattened with both endpoints pulled apart
+
+**Example**:
+```json
+{
+  "skill": "flatten_articulated_ruler",
+  "dry_run": false
+}
+```
+
+**Important Notes**:
+- **Dual-arm grasp mode**: Both arms close grippers to hold endpoints
+- **Synchronized motion**: Left and right arms move together
+- **Orientation interpolation**: Yaw rotates to follow pulling direction
+- Fixed Z coordinate for all movements (table surface)
+- Pull distance, speed, and waypoint count are configurable
+- All localization happens before robot motion
+- Gripper orientation remains vertical (downward) throughout
+- Only locates 2 points (red and blue endpoints), no joint localization needed
+
+---
+
 ## Notes for LLM
 
 ### Parameter Extraction Rules

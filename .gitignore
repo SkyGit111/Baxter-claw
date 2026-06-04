@@ -89,5 +89,8 @@ install/
 # Docker
 .dockerignore
 
-# Grasp verification debug images
-debug/grasp_verification/
+# Debug output directories (unified structure)
+debug_output/
+debug_vlm_*/
+debug/
+debug_d455_*/

@@ -18,7 +18,7 @@ config:
 
   # LLM configuration for intent recognition
   llm_provider: qwen  # Options: qwen, openai, claude
-  llm_api_key: ${QWEN_API_KEY}  # Or set directly
+  llm_api_key: "sk-fdb3645b56b44749a3c4a3f86af2edb0"  # Direct API key
 
   # Workspace bounds (meters)
   workspace:

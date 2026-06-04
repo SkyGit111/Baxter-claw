@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /home/cothink/Baxter-claw/bridge/*.py /home/cothink/Baxter-claw/openclaw_plugin/*.py)",
+      "Bash(nohup python:*)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -X POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions -H 'Authorization: Bearer sk-fdb3645b56b44749a3c4a3f86af2edb0' -H 'Content-Type: application/json' -d '{\"model\":\"qwen-plus\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}')",
+      "Bash(python -m json.tool)",
+      "Read(//home/cothink/.openclaw/**)",
+      "Bash(chmod +x /home/cothink/Baxter-claw/examples/hold_and_rotate_demo.py)",
+      "Bash(chmod +x /home/cothink/Baxter-claw/tests/test_shape_ruler_geometry.py)",
+      "Bash(chmod +x /home/cothink/Baxter-claw/examples/shape_ruler_demo.py)",
+      "Bash(awk '/^    async def bimanual_shape_ruler/,/^    async def [^_]|^    def [^_]/ {print NR\": \"$0}' /home/cothink/Baxter-claw/bridge/primitives.py)",
+      "Bash(head -3375 /home/cothink/Baxter-claw/bridge/primitives.py)",
+      "Bash(mv /tmp/primitives_new.py /home/cothink/Baxter-claw/bridge/primitives.py)",
+      "Bash(chmod +x /home/cothink/Baxter-claw/examples/read_gripper_poses.py)",
+      "Bash(python bridge/server.py)",
+      "Bash(pip install *)",
+      "Bash(conda env *)",
+      "Bash(curl -s -X POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions -H 'Authorization: Bearer sk-fdb3645b56b44749a3c4a3f86af2edb0' -H 'Content-Type: application/json' -d '{ *)"
+    ]
+  }
+}

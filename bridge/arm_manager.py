@@ -83,10 +83,11 @@ class ArmManager:
         """Create appropriate driver based on configuration."""
         driver_type = self.config.get('driver', {}).get('type', 'mock')
         use_depth_camera = self.config.get('driver', {}).get('use_depth_camera', False)
+        ik_solver_type = self.config.get('driver', {}).get('ik_solver', 'enhanced')
 
         if driver_type == 'baxter':
-            print(f"Creating BaxterDriver (real hardware, depth_camera={use_depth_camera})")
-            return BaxterDriver(use_depth_camera=use_depth_camera)
+            print(f"Creating BaxterDriver (real hardware, depth_camera={use_depth_camera}, ik_solver={ik_solver_type})")
+            return BaxterDriver(use_depth_camera=use_depth_camera, ik_solver_type=ik_solver_type)
         elif driver_type == 'mock':
             print("Creating MockDriver (simulation)")
             return MockDriver()

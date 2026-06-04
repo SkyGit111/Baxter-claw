@@ -48,6 +48,20 @@ class MultiViewVLMCoordinator:
         self.safety = safety_validator
         self.debug = debug
 
+        # Create debug directory with timestamp if debug enabled
+        if self.debug:
+            from datetime import datetime
+            import os
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Unified debug output directory
+            base_debug_dir = "debug_output/vlm"
+            os.makedirs(base_debug_dir, exist_ok=True)
+            self.debug_dir = os.path.join(base_debug_dir, f"session_{timestamp}")
+            os.makedirs(self.debug_dir, exist_ok=True)
+            print(f"[MultiView] Debug mode enabled - images will be saved to: {self.debug_dir}/")
+        else:
+            self.debug_dir = None
+
         # Calibration offset (from empirical testing)
         # Based on 8 test samples:
         # X: +13.29 cm ± 0.69 cm (stable)
@@ -193,8 +207,11 @@ class MultiViewVLMCoordinator:
 
         # Save debug images
         if self.debug:
+            # Create filename with object name for clarity
+            safe_object_name = object_name.replace(' ', '_').replace('/', '_')[:30]
+            filename_prefix = f"{self.debug_dir}/{safe_object_name}_{phase}"
             self.image_processor.save_debug_images(
-                f"debug_d455_{phase}",
+                filename_prefix,
                 raw_image=rgb_image,
                 processed_image=processed_rgb,
                 depth_image=processed_depth
@@ -251,8 +268,11 @@ class MultiViewVLMCoordinator:
                     center_y = (bbox[1] + bbox[3]) // 2
                     depth_value = processed_depth[center_y, center_x] if center_y < processed_depth.shape[0] and center_x < processed_depth.shape[1] else None
 
+                    # Create filename with object name for clarity
+                    safe_object_name = object_name.replace(' ', '_').replace('/', '_')[:30]
+                    filename_prefix = f"{self.debug_dir}/{safe_object_name}_{phase}"
                     self.image_processor.save_annotated_debug_images(
-                        f"debug_d455_{phase}",
+                        filename_prefix,
                         raw_image=rgb_image,
                         depth_image=processed_depth,
                         bbox=bbox,
@@ -261,6 +281,7 @@ class MultiViewVLMCoordinator:
                         position_camera=position_camera,
                         position_base=position_calibrated  # Use calibrated position
                     )
+                    print(f"\033[96m[Debug]\033[0m Saved annotated images: {filename_prefix}_*.jpg")
             else:
                 print(f"  WARNING: Coordinate transform not available!")
                 print(f"  Using camera frame coordinates (INCORRECT for robot control!)")
@@ -293,9 +314,10 @@ class MultiViewVLMCoordinator:
         processed_head, metadata = self.image_processor.process_head_camera_image(head_image)
 
         # Save debug images
-        if self.debug:
+        if self.debug and self.debug_dir:
+            filename_prefix = f"{self.debug_dir}/head_camera_{phase}"
             self.image_processor.save_debug_images(
-                "debug_head_phase1",
+                filename_prefix,
                 raw_image=head_image,
                 processed_image=processed_head
             )
@@ -466,9 +488,10 @@ class MultiViewVLMCoordinator:
         processed_wrist, metadata = self.image_processor.process_wrist_camera_image(wrist_image)
 
         # Save debug images
-        if self.debug:
+        if self.debug and self.debug_dir:
+            filename_prefix = f"{self.debug_dir}/wrist_camera_phase2"
             self.image_processor.save_debug_images(
-                "debug_wrist_phase2",
+                filename_prefix,
                 raw_image=wrist_image,
                 processed_image=processed_wrist
             )

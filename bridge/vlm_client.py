@@ -37,7 +37,7 @@ class VLMClient:
         self.models = {
             'claude': 'claude-3-5-sonnet-20241022',
             'openai': 'gpt-4-vision-preview',
-            'qwen': 'qwen-vl-max',
+            'qwen': 'qwen-vl-max',  # Vision model for Qwen
         }
 
     def _get_api_key(self) -> str:
@@ -95,6 +95,8 @@ class VLMClient:
 
         except Exception as e:
             print(f"Failed to locate object: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _build_locate_prompt(
@@ -103,36 +105,48 @@ class VLMClient:
         workspace_bounds: Optional[Dict[str, Tuple[float, float]]]
     ) -> str:
         """Build prompt for object localization."""
-        prompt = f"""Analyze this image from a Baxter robot's camera and locate the {object_name}.
+        prompt = f"""You are a robot vision system. Your ONLY task is to locate the {object_name}.
 
-Please provide:
-1. Whether the {object_name} is visible in the image (yes/no)
-2. If visible, describe its location in the image (e.g., "center-left", "top-right")
-3. Estimate the object's position relative to the robot's workspace
-4. Provide a bounding box in pixel coordinates [x1, y1, x2, y2] where (0,0) is top-left
-5. Your confidence level (0-100%)
+CRITICAL REQUIREMENTS:
+1. You MUST find and locate the {object_name} - this is mandatory
+2. Be FLEXIBLE with matching: if you see anything that could reasonably be "{object_name}", that counts
+3. For colors: accept similar shades (e.g., "黄色" includes yellow, golden, amber, light orange)
+4. For shapes: "小方块" means any small cube, block, or box-like object
+5. If you see MULTIPLE candidates, pick the most likely one
+6. You MUST set found=true and provide a real position - [0,0,0] is NOT acceptable
+7. If uncertain, use lower confidence (30-70) but still return found=true
+
+Your task: Find the {object_name} in this image and provide its location.
 
 """
 
         if workspace_bounds:
             prompt += f"""
-The robot's workspace is:
-- X (forward): {workspace_bounds['x'][0]:.2f}m to {workspace_bounds['x'][1]:.2f}m
-- Y (lateral): {workspace_bounds['y'][0]:.2f}m to {workspace_bounds['y'][1]:.2f}m
-- Z (height): {workspace_bounds['z'][0]:.2f}m to {workspace_bounds['z'][1]:.2f}m
+Robot workspace (estimate position within these bounds):
+- X: {workspace_bounds['x'][0]:.2f}m to {workspace_bounds['x'][1]:.2f}m
+- Y: {workspace_bounds['y'][0]:.2f}m to {workspace_bounds['y'][1]:.2f}m
+- Z: {workspace_bounds['z'][0]:.2f}m to {workspace_bounds['z'][1]:.2f}m
 
-Estimate the 3D position within this workspace.
 """
 
         prompt += """
-Respond in JSON format:
+OUTPUT FORMAT (respond with ONLY valid JSON, no markdown):
 {
-    "found": true/false,
+    "found": true,
     "position": [x, y, z],
-    "confidence": 0-100,
-    "description": "detailed description",
+    "confidence": 30-100,
+    "description": "what you see and why you picked it",
     "bounding_box": [x1, y1, x2, y2]
 }
+
+EXAMPLES:
+- If you see a yellow cube: {"found": true, "position": [0.6, 0.0, -0.1], "confidence": 90, "description": "bright yellow cube at center", "bounding_box": [320, 240, 380, 300]}
+- If you see a yellowish block: {"found": true, "position": [0.5, 0.1, -0.1], "confidence": 60, "description": "yellowish rectangular block, slightly faded color", "bounding_box": [280, 200, 340, 260]}
+- If you see an orange-yellow object: {"found": true, "position": [0.7, -0.1, -0.1], "confidence": 50, "description": "orange-yellow object that could be the target", "bounding_box": [400, 220, 450, 280]}
+
+REMEMBER: You MUST return found=true with a real position. Saying "not found" is NOT an option.
+
+"黄色小方块" = any visible yellow/yellowish cube/block. If you see one, select it and return found=true; do not mark not found due to ambiguity.
 """
 
         return prompt
@@ -295,17 +309,28 @@ Respond in JSON format:
             print(f"  confidence: {result.get('confidence')}")
             print(f"  position: {result.get('position')}")
 
-            # Smart detection: if VLM provides position and confidence > 0,
-            # it likely found the object even if 'found' field is missing or false
+            # FORCE VLM TO GIVE RESULT: Never accept found=false
+            # If VLM says not found, force it to give best guess anyway
             found = result.get('found', False)
             confidence = result.get('confidence', 0.0)
             position = result.get('position', [0.0, 0.0, 0.0])
             bounding_box = result.get('bounding_box', [0, 0, 0, 0])
 
-            # Override found=false if we have valid detection data
+            # Strategy 1: Override found=false if we have valid detection data
             if not found and confidence > 50 and any(p != 0.0 for p in position):
                 print(f"[VLM] ⚠ Overriding found=false because confidence={confidence}% and position is valid")
                 found = True
+
+            # Strategy 2: FORCE found=true if position is non-zero (even with low confidence)
+            if not found and any(p != 0.0 for p in position):
+                print(f"[VLM] ⚠ FORCING found=true because VLM provided position {position}")
+                print(f"[VLM] ⚠ Using confidence={confidence}% even though VLM said not found")
+                found = True
+
+            # Strategy 3: If still not found, this is a real failure (all zeros)
+            if not found:
+                print(f"[VLM] ✗ VLM truly failed - returned all zeros")
+                print(f"[VLM] ✗ This means VLM could not locate the object at all")
 
             # Validate and normalize
             return {

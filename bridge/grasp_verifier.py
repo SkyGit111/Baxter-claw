@@ -55,7 +55,8 @@ class GraspVerifier:
         # Create debug directory if debug mode is enabled
         if self.debug:
             import os
-            self.debug_dir = "debug/grasp_verification"
+            # Unified debug output directory
+            self.debug_dir = "debug_output/grasp_verification"
             os.makedirs(self.debug_dir, exist_ok=True)
             print(f"[GraspVerifier] Debug images will be saved to: {self.debug_dir}/")
 

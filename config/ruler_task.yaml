@@ -1,0 +1,34 @@
+# Articulated Ruler Task Configuration - SIMPLIFIED VERSION
+# Simple arc-pushing approach without joint localization
+
+articulated_ruler:
+  # VLM localization prompts (only 2 points needed)
+  # red_grasp_prompt: "红色尺段远离绿色关节一端的抓取块中心"
+  # blue_push_prompt: "蓝色尺段远离橙色关节一端的抓取块中心"
+
+  red_grasp_prompt: "center of the purple tape patch on the outer end of the red segment"
+  blue_push_prompt: "center of the large green tape patch on the outer end of the blue segment"
+  
+
+  # Arc motion parameters
+  arc_motion:
+    angle_degrees: 90              # Arc angle (default 90 degrees)
+    direction: "clockwise"         # "clockwise" or "counterclockwise"
+    num_waypoints: 20              # Number of waypoints along the arc
+    push_z: -0.16                  # Fixed Z height for pushing (table surface)
+    approach_z_offset: 0.08        # Offset for approaching from above
+    push_speed_scale: 0.2          # Speed scale for pushing motion (slow and stable)
+    min_radius: 0.08               # Minimum arc radius (meters)
+    max_radius: 0.40               # Maximum arc radius (meters)
+
+  # Grasp parameters
+  grasp:
+    grasp_z: -0.16                 # Fixed Z height for grasping red segment
+    approach_z_offset: 0.08        # Offset for approaching from above
+    grasp_force: 30.0              # Gripper force for holding red segment
+
+  # Default task parameters
+  default_task:
+    fixed_arm: left                # Arm to grasp red segment
+    moving_arm: right              # Arm to push blue segment
+    speed: 0.10                    # Overall speed scale

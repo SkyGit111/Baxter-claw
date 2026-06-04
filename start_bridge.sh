@@ -95,6 +95,10 @@ echo "=========================================="
 echo -e "${GREEN}启动 Bridge Server${NC}"
 echo "=========================================="
 echo ""
+
+# 设置API key
+export QWEN_API_KEY=sk-fdb3645b56b44749a3c4a3f86af2edb0
+
 echo "配置信息:"
 echo "  - 驱动类型: baxter (真机)"
 echo "  - 服务器端口: 8420"
